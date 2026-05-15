@@ -1,0 +1,10 @@
+/mongomig
+*.exe
+.DS_Store
+.idea/
+.vscode/
+.cache/
+demo-export-*/
+mongodb-database-tools-*/
+.env
+.staging/
