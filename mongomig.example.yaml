@@ -1,0 +1,16 @@
+# Copy to mongomig.yaml and adjust. CLI flags override these values when set.
+
+mongo_uri: "mongodb://user:pass@localhost:27017/?authSource=admin"
+staging_dir: "./staging"
+db: "revol"
+remote_prefix: "mongomig"
+log_level: "info"
+gzip: true
+
+s3:
+  endpoint: "https://tos-s3-cn-shanghai.volces.com"
+  region: "cn-shanghai"
+  bucket: "your-bucket"
+  access_key_id: ""
+  secret_access_key: ""
+  use_path_style: false

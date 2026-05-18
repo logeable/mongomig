@@ -8,3 +8,5 @@ demo-export-*/
 mongodb-database-tools-*/
 .env
 .staging/
+/mongomig.yaml
+/staging/

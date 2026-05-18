@@ -32,6 +32,9 @@ type Root struct {
 	RemotePrefix string `json:"remote_prefix,omitempty"`
 
 	LogLevel string `json:"log_level,omitempty"`
+
+	// Default database for backup when using collection auto-discovery.
+	DB string `json:"db,omitempty"`
 }
 
 type S3 struct {
@@ -43,30 +46,12 @@ type S3 struct {
 	UsePathStyle    bool   `json:"use_path_style,omitempty"`
 }
 
-// FromEnv overlays sensitive fields from environment variables.
-func (r *Root) FromEnv() {
-	if r == nil {
-		return
-	}
-	if r.MongoURI == "" {
-		r.MongoURI = os.Getenv("MONGOMIG_MONGO_URI")
-	}
-	if r.S3 != nil {
-		if r.S3.AccessKeyID == "" {
-			r.S3.AccessKeyID = os.Getenv("MONGOMIG_S3_ACCESS_KEY_ID")
-		}
-		if r.S3.SecretAccessKey == "" {
-			r.S3.SecretAccessKey = os.Getenv("MONGOMIG_S3_SECRET_ACCESS_KEY")
-		}
-	}
-}
-
 func (r *Root) Validate() error {
 	if r == nil {
 		return errors.New("config is nil")
 	}
 	if r.MongoURI == "" {
-		return errors.New("mongo_uri is required (or MONGOMIG_MONGO_URI)")
+		return errors.New("mongo_uri is required (mongomig.yaml or --mongo-uri)")
 	}
 	if r.StagingDir == "" {
 		return errors.New("staging_dir is required")

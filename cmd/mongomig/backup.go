@@ -16,6 +16,7 @@ import (
 
 func newBackupCmd(v *viper.Viper) *cobra.Command {
 	var (
+		dbName        string
 		collections   string
 		tenantField   string
 		timeField     string
@@ -41,10 +42,36 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 			if err := cfg.EnsureStaging(); err != nil {
 				return err
 			}
-			specs, err := backup.ParseCollectionSpecs(collections)
+
+			if strings.TrimSpace(dbName) == "" {
+				dbName = strings.TrimSpace(v.GetString("db"))
+			}
+			if strings.TrimSpace(dbName) == "" {
+				dbName = strings.TrimSpace(cfg.DB)
+			}
+
+			logger, err := mongolog.New(cfg.LogLevel)
 			if err != nil {
 				return err
 			}
+			defer func() { _ = logger.Sync() }()
+
+			ctx, cancel := notifyContext()
+			defer cancel()
+
+			specs, err := backup.ResolveCollectionSpecs(ctx, cfg.MongoURI, dbName, collections)
+			if err != nil {
+				return err
+			}
+			names := make([]string, len(specs))
+			for i, s := range specs {
+				names[i] = s.String()
+			}
+			logger.Info("backup collections resolved",
+				zap.String("db", dbName),
+				zap.Strings("collections", names),
+			)
+
 			to := backup.HourBucketUTC(time.Now().UTC())
 			if strings.TrimSpace(toHour) != "" {
 				to, err = backup.ParseHourFlag(toHour)
@@ -68,15 +95,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 				}
 				reset = &rh
 			}
-
-			logger, err := mongolog.New(cfg.LogLevel)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = logger.Sync() }()
-
-			ctx, cancel := notifyContext()
-			defer cancel()
 
 			remote, err := storage.NewRemote(ctx, cfg)
 			if err != nil {
@@ -104,7 +122,8 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated db.collection (required)")
+	cmd.Flags().StringVar(&dbName, "db", "", "MongoDB database name (required; or MONGOMIG_DB)")
+	cmd.Flags().StringVar(&collections, "collections", "", "Optional comma-separated collection names under --db; default: discover all collections")
 	cmd.Flags().StringVar(&tenantField, "tenant-field", "tenant_key", "BSON tenant field")
 	cmd.Flags().StringVar(&timeField, "time-field", "created_at", "BSON time field for hour window")
 	cmd.Flags().BoolVar(&tenantNumeric, "tenant-key-numeric", false, "Tenant id is numeric JSON in queries")
@@ -114,6 +133,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan only; no dump/upload")
 	cmd.Flags().BoolVar(&forceHour, "force-hour", false, "Re-backup hours already marked complete")
 	cmd.Flags().StringVar(&resetHour, "reset-hour", "", "Delete OSS prefix for one UTC hour before backup")
-	_ = cmd.MarkFlagRequired("collections")
+	_ = v.BindPFlag("db", cmd.Flags().Lookup("db"))
 	return cmd
 }

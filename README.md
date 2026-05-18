@@ -24,7 +24,7 @@
 
 - Go 1.23+
 - [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/)：`mongodump`（及系统 `tar`）
-- 配置 S3：`--s3-endpoint`、`--s3-bucket` 或 `.env` / `MONGOMIG_*`、`S3_*`
+- 配置：项目根目录 **`mongomig.yaml`**（可参考 `mongomig.example.yaml`）；命令行 flags 可覆盖
 
 ## 构建
 
@@ -41,7 +41,8 @@ go build -o mongomig ./cmd/mongomig
   --s3-bucket "your-bucket" --s3-region "cn-shanghai" \
   --s3-path-style=false \
   backup \
-  --collections "revol.liveroom_platform_raw_data" \
+  --db revol \
+  [--collections "liveroom_platform_raw_data,liveroom_platform_raw_data"] \
   [--tenant-field tenant_key] \
   [--time-field created_at] \
   [--from-hour 2026-05-15T00] [--to-hour 2026-05-15T17] \
@@ -50,14 +51,29 @@ go build -o mongomig ./cmd/mongomig
 
 | Flag | 说明 |
 |------|------|
-| `--collections` | 必填，逗号分隔 `db.collection` |
+| `--db` | 必填（或 `mongomig.yaml` 中 `db`），要备份的 MongoDB 库名 |
+| `--collections` | 可选；逗号分隔**集合名**（相对 `--db`）。省略则自动 `listCollections` 发现该库下全部非 system 集合 |
 | `--from-hour` / `--to-hour` | UTC `YYYY-MM-DDTHH`；默认 `to` = 当前 UTC 小时 |
 | `--force-hour` | 已 `complete` 的小时仍重备 |
 | `--reset-hour` | 先删除该小时 OSS 前缀再备 |
 
-## 环境变量
+## 配置文件 `mongomig.yaml`
 
-`MONGOMIG_MONGO_URI`、`MONGOMIG_S3_*`，以及 `.env` 中常见的 `S3_ENDPOINT`、`S3_BUCKET`、`ACCESS_KEY_ID`、`SECRET_ACCESS_KEY`。火山 TOS 建议使用地域 endpoint（如 `https://tos-s3-cn-shanghai.volces.com`）且 **`--s3-path-style=false`**。
+```yaml
+mongo_uri: "mongodb://..."
+staging_dir: "./staging"
+db: "revol"
+remote_prefix: "mongomig"
+s3:
+  endpoint: "https://tos-s3-cn-shanghai.volces.com"
+  region: "cn-shanghai"
+  bucket: "your-bucket"
+  access_key_id: "..."
+  secret_access_key: "..."
+  use_path_style: false
+```
+
+火山 TOS 建议使用地域 endpoint，且 **`use_path_style: false`**（virtual-hosted）。
 
 ## 恢复（未实现）
 
