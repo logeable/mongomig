@@ -1,11 +1,6 @@
 package main
 
 import (
-	"context"
-	"os"
-	"os/signal"
-	"syscall"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -51,19 +46,4 @@ func newRoot() *cobra.Command {
 
 	root.AddCommand(newBackupCmd(v), newRestoreCmd(), newStatusCmd())
 	return root
-}
-
-func notifyContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-ch:
-			cancel()
-		case <-ctx.Done():
-		}
-		signal.Stop(ch)
-	}()
-	return ctx, cancel
 }

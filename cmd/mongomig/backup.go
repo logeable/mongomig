@@ -9,6 +9,7 @@ import (
 	"github.com/logeable/mongomig/internal/backup"
 	"github.com/logeable/mongomig/internal/config"
 	mongolog "github.com/logeable/mongomig/internal/log"
+	"github.com/logeable/mongomig/internal/shutdown"
 	"github.com/logeable/mongomig/internal/storage"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -26,7 +27,8 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 		cleanupLocal  bool
 		dryRun        bool
 		forceHour     bool
-		resetHour     string
+		resetHour      string
+		shutdownGrace  time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "backup",
@@ -56,8 +58,9 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 			}
 			defer func() { _ = logger.Sync() }()
 
-			ctx, cancel := notifyContext()
-			defer cancel()
+			coord := shutdown.New(shutdownGrace)
+			defer coord.Stop()
+			ctx := coord.Context()
 
 			logger.Debug("backup config",
 				zap.String("db", dbName),
@@ -133,10 +136,15 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 				ForceHour:     forceHour,
 				ResetHour:     reset,
 				RemotePrefix:  cfg.RemotePrefix,
+				Shutdown:      coord,
 			}
 			err = backup.RunHourlyOSSSync(ctx, cfg, remote, logger, opts)
 			if err != nil {
-				logger.Warn("backup stopped", zap.Error(err))
+				if coord.Stopping() {
+					logger.Warn("backup stopped after shutdown signal", zap.Error(err), zap.Bool("forced", coord.Forced()))
+				} else {
+					logger.Warn("backup stopped", zap.Error(err))
+				}
 				return err
 			}
 			logger.Info("backup finished")
@@ -154,6 +162,7 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan only; no dump/upload")
 	cmd.Flags().BoolVar(&forceHour, "force-hour", false, "Re-backup hours already marked complete")
 	cmd.Flags().StringVar(&resetHour, "reset-hour", "", "Delete OSS prefix for one UTC hour before backup")
+	cmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 30*time.Second, "After first Ctrl+C, wait up to this long for current tenant to finish before force cancel")
 	_ = v.BindPFlag("db", cmd.Flags().Lookup("db"))
 	return cmd
 }

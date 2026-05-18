@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/logeable/mongomig/internal/config"
+	"github.com/logeable/mongomig/internal/shutdown"
 	"github.com/logeable/mongomig/internal/storage"
 )
 
@@ -26,6 +27,7 @@ type HourlySyncOpts struct {
 	ForceHour      bool
 	ResetHour      *HourBucket
 	RemotePrefix   string
+	Shutdown       *shutdown.Coordinator
 }
 
 // RunHourlyOSSSync backs up each collection by UTC hour buckets to OSS.
@@ -56,7 +58,7 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 	log.Debug("sync clock", zap.Time("now_utc", now))
 
 	for _, ns := range opts.Collections {
-		if err := ctx.Err(); err != nil {
+		if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
 			return err
 		}
 		collBase := CollectionBase(opts.RemotePrefix, ns.DB, ns.Coll)
@@ -106,7 +108,7 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 					zap.Int("tenant_rows", len(hm.Tenants)),
 					zap.Int("uploaded", countUploaded(hm.Tenants)),
 				)
-				if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, activeBucket, hm, now, true); err != nil {
+				if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, activeBucket, hm, now, true, opts.Shutdown); err != nil {
 					return err
 				}
 				if err := meta.SaveCollectionMeta(ctx, collBase, collMeta); err != nil {
@@ -135,7 +137,7 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 			zap.Int("hour_count", len(hourList)),
 		)
 		for _, hb := range hourList {
-			if err := ctx.Err(); err != nil {
+			if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
 				return err
 			}
 			if collMeta.Active != nil && sameHour(collMeta.Active.Bucket(), hb) && collMeta.Active.Status != HourStatusComplete {
@@ -171,7 +173,7 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 				hm = nil
 				exists = false
 			}
-			if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, hb, hm, now, exists); err != nil {
+			if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, hb, hm, now, exists, opts.Shutdown); err != nil {
 				return err
 			}
 		}
@@ -182,6 +184,18 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 	}
 	log.Debug("hourly sync finished", zap.Int("collections", len(opts.Collections)))
 	return nil
+}
+
+// shouldStopWork reports whether to stop before starting new tenants/hours.
+// First SIGINT sets stopping; forced cancel also returns true with ctx error.
+func shouldStopWork(ctx context.Context, coord *shutdown.Coordinator) (bool, error) {
+	if coord != nil && coord.Stopping() {
+		return true, context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
+	return false, nil
 }
 
 func logCollectionMeta(log *zap.Logger, cm *CollectionMeta) {
@@ -259,6 +273,7 @@ func processHour(
 	existing *HourMeta,
 	now time.Time,
 	resume bool,
+	coord *shutdown.Coordinator,
 ) error {
 	hourBase := HourBase(collBase, hb)
 	hourMetaKey := HourMetaKey(hourBase)
@@ -315,8 +330,11 @@ func processHour(
 	}
 
 	for i := range hm.Tenants {
+		if coord != nil && coord.Stopping() {
+			return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
+		}
 		if err := ctx.Err(); err != nil {
-			return persistShutdown(ctx, meta, log, ns, collBase, collMeta, hourBase, hm, hb, now)
+			return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
 		}
 		row := &hm.Tenants[i]
 		if row.Uploaded && row.Error == "" {
@@ -330,9 +348,9 @@ func processHour(
 		if row.Error != "" && row.Uploaded {
 			continue
 		}
-		if err := backupOneTenant(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, hourBase, hb, hm, row, i); err != nil {
+		if err := backupOneTenant(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, hourBase, hb, hm, row, i, coord); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return persistShutdown(ctx, meta, log, ns, collBase, collMeta, hourBase, hm, hb, now)
+				return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
 			}
 			row.Error = err.Error()
 			row.Uploaded = false
@@ -351,8 +369,11 @@ func processHour(
 		}
 	}
 
+	if coord != nil && coord.Stopping() {
+		return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
+	}
 	if err := ctx.Err(); err != nil {
-		return persistShutdown(ctx, meta, log, ns, collBase, collMeta, hourBase, hm, hb, now)
+		return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
 	}
 
 	return finalizeHour(ctx, meta, log, collBase, collMeta, hourBase, hb, hm, now)
@@ -401,6 +422,7 @@ func backupOneTenant(
 	hm *HourMeta,
 	row *TenantMetaRow,
 	idx int,
+	coord *shutdown.Coordinator,
 ) error {
 	if row.TenantKey == "" {
 		return fmt.Errorf("empty tenant_key at index %d", idx)
@@ -425,12 +447,16 @@ func backupOneTenant(
 		zap.String("work_dir", workDir),
 		zap.String("object_key", obj),
 	)
-	tarPath, sha, size, err := archiver.DumpAndTar(ctx, log, ns, opts.TenantField, row.TenantKey, opts.TenantNumeric, opts.TimeField, hb.Start, hb.End, workDir)
+	tenantCtx := ctx
+	if coord != nil {
+		tenantCtx = coord.TenantContext()
+	}
+	tarPath, sha, size, err := archiver.DumpAndTar(tenantCtx, log, ns, opts.TenantField, row.TenantKey, opts.TenantNumeric, opts.TimeField, hb.Start, hb.End, workDir)
 	if err != nil {
 		return err
 	}
 	log.Debug("uploading dump.tar", zap.String("local", tarPath), zap.Int64("size_bytes", size))
-	if err := remote.UploadFile(ctx, tarPath, obj); err != nil {
+	if err := remote.UploadFile(tenantCtx, tarPath, obj); err != nil {
 		return err
 	}
 	row.Uploaded = true
@@ -513,20 +539,36 @@ func setCollectionActive(cm *CollectionMeta, collBase string, hb HourBucket, hou
 	cm.Active = &ref
 }
 
-func persistShutdown(ctx context.Context, meta *MetaStore, log *zap.Logger, ns NSSpec, collBase string, collMeta *CollectionMeta, hourBase string, hm *HourMeta, hb HourBucket, _ time.Time) error {
+func persistShutdown(meta *MetaStore, log *zap.Logger, ns NSSpec, collBase string, collMeta *CollectionMeta, hourBase string, hm *HourMeta, hb HourBucket, coord *shutdown.Coordinator) error {
 	if hm.Status == HourStatusComplete {
+		if coord != nil {
+			coord.NotifyPersisted()
+		}
 		return context.Canceled
 	}
-	if hm.Status == HourStatusInProgress {
+	graceful := coord != nil && coord.Stopping() && !coord.Forced()
+	if hm.Status == HourStatusInProgress && !graceful {
+		// Forced cancel: mark partial so operators know the hour was interrupted.
 		hm.Status = HourStatusPartial
 	}
+	// Graceful first Ctrl+C: keep in_progress so the next run resumes uploaded tenants.
 	setCollectionActive(collMeta, collBase, hb, HourMetaKey(hourBase), hm.Status)
-	_ = meta.SaveHourMeta(ctx, hourBase, hm)
-	_ = meta.SaveCollectionMeta(ctx, collBase, collMeta)
+	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := meta.SaveHourMeta(persistCtx, hourBase, hm); err != nil {
+		log.Error("save hour meta on shutdown", zap.Error(err))
+	} else if err := meta.SaveCollectionMeta(persistCtx, collBase, collMeta); err != nil {
+		log.Error("save collection meta on shutdown", zap.Error(err))
+	}
+	if coord != nil {
+		coord.NotifyPersisted()
+	}
 	log.Warn("shutdown requested, resumable checkpoint saved",
 		zap.String("collection", ns.String()),
 		zap.String("hour", hb.String()),
 		zap.String("hour_status", string(hm.Status)),
+		zap.Bool("graceful", graceful),
+		zap.Bool("forced", coord != nil && coord.Forced()),
 		zap.Int("uploaded", countUploaded(hm.Tenants)),
 		zap.Int("tenants", len(hm.Tenants)),
 	)
