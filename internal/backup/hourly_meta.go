@@ -16,9 +16,8 @@ const hourlyMetaSchema = 1
 type HourStatus string
 
 const (
-	HourStatusInProgress HourStatus = "in_progress"
-	HourStatusPartial    HourStatus = "partial"
-	HourStatusComplete   HourStatus = "complete"
+	HourStatusPartial  HourStatus = "partial"
+	HourStatusComplete HourStatus = "complete"
 )
 
 // HourRef summarizes a UTC hour partition in collection meta.
@@ -77,11 +76,11 @@ type CollectionMeta struct {
 }
 
 // TenantMetaRow is one tenant in an hour backup.
+// DataRelPath is relative to the hour prefix ({year}/{month}/{day}/{hour}/).
 type TenantMetaRow struct {
 	TenantKey   string `json:"tenant_key"`
 	Shard       string `json:"shard"`
 	DataRelPath string `json:"data_rel_path"`
-	ObjectKey   string `json:"object_key"`
 	Uploaded    bool   `json:"uploaded"`
 	SHA256      string `json:"sha256,omitempty"`
 	SizeBytes   int64  `json:"size_bytes,omitempty"`

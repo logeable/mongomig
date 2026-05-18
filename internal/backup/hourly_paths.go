@@ -110,6 +110,7 @@ func HourMetaKey(hourBase string) string {
 	return hourBase + "/meta.json"
 }
 
+// TenantObjectKey is the full OSS object key: {hourBase}/{dataRelPath}.
 func TenantObjectKey(hourBase, dataRelPath string) string {
 	return hourBase + "/" + dataRelPath
 }

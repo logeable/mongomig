@@ -30,10 +30,3 @@ func TestHourEnded_completeVsPartial(t *testing.T) {
 	})
 }
 
-func TestShouldWipePartialHour(t *testing.T) {
-	hm := &HourMeta{Status: HourStatusPartial}
-	wipe := hm != nil && hm.Status == HourStatusPartial
-	if !wipe {
-		t.Fatal("partial hour should wipe on new schedule")
-	}
-}

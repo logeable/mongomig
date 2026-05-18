@@ -78,11 +78,17 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 		}
 		collMeta.DB = ns.DB
 		collMeta.Collection = ns.Coll
+		if collMeta.Active != nil {
+			if err := validateHourStatus(collMeta.Active.Status, "collection active"); err != nil {
+				return err
+			}
+		}
 		log.Debug("collection meta loaded",
 			zap.Bool("found", collFound),
 			zap.String("meta_key", CollectionMetaKey(collBase)),
 		)
 		logCollectionMeta(log, collMeta)
+		warnCompletedGap(log, collMeta)
 
 		if opts.ResetHour != nil {
 			hb := *opts.ResetHour
@@ -90,30 +96,6 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 			log.Warn("reset-hour: deleting hour prefix", zap.String("hour", hb.String()))
 			if err := remote.DeletePrefix(ctx, hourBase+"/"); err != nil {
 				return err
-			}
-		}
-
-		// Resume active in_progress hour before scanning forward.
-		if collMeta.Active != nil {
-			activeBucket := collMeta.Active.Bucket()
-			hourBase := HourBase(collBase, activeBucket)
-			hm, ok, err := meta.LoadHourMeta(ctx, hourBase)
-			if err != nil {
-				return err
-			}
-			if ok && hm.Status == HourStatusInProgress {
-				log.Info("resume in_progress hour", zap.String("hour", activeBucket.String()))
-				log.Debug("active hour meta",
-					zap.String("status", string(hm.Status)),
-					zap.Int("tenant_rows", len(hm.Tenants)),
-					zap.Int("uploaded", countUploaded(hm.Tenants)),
-				)
-				if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, activeBucket, hm, now, true, opts.Shutdown); err != nil {
-					return err
-				}
-				if err := meta.SaveCollectionMeta(ctx, collBase, collMeta); err != nil {
-					return err
-				}
 			}
 		}
 
@@ -140,10 +122,6 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 			if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
 				return err
 			}
-			if collMeta.Active != nil && sameHour(collMeta.Active.Bucket(), hb) && collMeta.Active.Status != HourStatusComplete {
-				log.Debug("skip hour already resumed via active", zap.String("hour", hb.String()))
-				continue // already handled resume
-			}
 			hourBase := HourBase(collBase, hb)
 			log.Debug("processing hour", zap.String("hour", hb.String()), zap.String("hour_base", hourBase))
 			hm, exists, err := meta.LoadHourMeta(ctx, hourBase)
@@ -151,11 +129,13 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 				return err
 			}
 			if exists {
+				if err := validateHourStatus(hm.Status, HourMetaKey(hourBase)); err != nil {
+					return err
+				}
 				log.Debug("hour meta loaded",
 					zap.String("hour", hb.String()),
 					zap.String("status", string(hm.Status)),
 					zap.Int("tenants", len(hm.Tenants)),
-					zap.Int("uploaded", countUploaded(hm.Tenants)),
 				)
 			} else {
 				log.Debug("hour meta missing, will create", zap.String("hour", hb.String()))
@@ -164,16 +144,13 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 				log.Debug("skip complete hour", zap.String("hour", hb.String()))
 				continue
 			}
-			wipePartial := exists && hm.Status == HourStatusPartial
-			if wipePartial {
+			if exists && hm.Status == HourStatusPartial {
 				log.Info("partial hour: wipe and rediscover", zap.String("hour", hb.String()))
 				if err := remote.DeletePrefix(ctx, hourBase+"/"); err != nil {
 					return err
 				}
-				hm = nil
-				exists = false
 			}
-			if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, hb, hm, now, exists, opts.Shutdown); err != nil {
+			if err := processHour(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, collMeta, hb, now, opts.Shutdown); err != nil {
 				return err
 			}
 		}
@@ -187,7 +164,6 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 }
 
 // shouldStopWork reports whether to stop before starting new tenants/hours.
-// First SIGINT sets stopping; forced cancel also returns true with ctx error.
 func shouldStopWork(ctx context.Context, coord *shutdown.Coordinator) (bool, error) {
 	if coord != nil && coord.Stopping() {
 		return true, context.Canceled
@@ -241,6 +217,30 @@ func sameHour(a, b HourBucket) bool {
 	return a.Start.Equal(b.Start)
 }
 
+func validateHourStatus(s HourStatus, where string) error {
+	switch s {
+	case HourStatusPartial, HourStatusComplete:
+		return nil
+	default:
+		return fmt.Errorf("%s: invalid hour status %q (expected partial or complete)", where, s)
+	}
+}
+
+func warnCompletedGap(log *zap.Logger, cm *CollectionMeta) {
+	if cm == nil || cm.NewestCompleted == nil || cm.Active == nil {
+		return
+	}
+	next := cm.NewestCompleted.Bucket().Next()
+	active := cm.Active.Bucket()
+	if active.Start.After(next.Start) && !sameHour(active, next) {
+		log.Warn("backup gap: newest_completed+1 is behind active; forward scan will backfill",
+			zap.String("newest_completed", hourRefLabel(cm.NewestCompleted)),
+			zap.String("expected_next_hour", next.String()),
+			zap.String("active", hourRefLabel(cm.Active)),
+		)
+	}
+}
+
 func resolveStartHour(ctx context.Context, mongoURI string, ns NSSpec, opts HourlySyncOpts, cm *CollectionMeta) (HourBucket, error) {
 	if opts.FromHour != nil {
 		return *opts.FromHour, nil
@@ -270,63 +270,47 @@ func processHour(
 	collBase string,
 	collMeta *CollectionMeta,
 	hb HourBucket,
-	existing *HourMeta,
 	now time.Time,
-	resume bool,
 	coord *shutdown.Coordinator,
 ) error {
 	hourBase := HourBase(collBase, hb)
 	hourMetaKey := HourMetaKey(hourBase)
 
-	var hm *HourMeta
-	if resume && existing != nil {
-		hm = existing
-		log.Debug("hour resume existing tenant list",
-			zap.String("hour", hb.String()),
-			zap.Int("tenants", len(hm.Tenants)),
-			zap.Int("pending", len(hm.Tenants)-countUploaded(hm.Tenants)),
-		)
-	} else {
-		if opts.DryRun {
-			log.Info("dry-run: would backup hour", zap.String("hour", hb.String()))
-			return nil
-		}
-		log.Debug("discover tenants",
-			zap.String("hour", hb.String()),
-			zap.Time("interval_start", hb.Start),
-			zap.Time("interval_end", hb.End),
-			zap.String("tenant_field", opts.TenantField),
-			zap.String("time_field", opts.TimeField),
-		)
-		tenants, err := DiscoverTenantsInHour(ctx, cfg.MongoURI, ns, opts.TenantField, opts.TimeField, opts.TenantNumeric, hb.Start, hb.End)
+	if opts.DryRun {
+		log.Info("dry-run: would backup hour", zap.String("hour", hb.String()))
+		return nil
+	}
+
+	log.Debug("discover tenants",
+		zap.String("hour", hb.String()),
+		zap.Time("interval_start", hb.Start),
+		zap.Time("interval_end", hb.End),
+		zap.String("tenant_field", opts.TenantField),
+		zap.String("time_field", opts.TimeField),
+	)
+	tenants, err := DiscoverTenantsInHour(ctx, cfg.MongoURI, ns, opts.TenantField, opts.TimeField, opts.TenantNumeric, hb.Start, hb.End)
+	if err != nil {
+		return err
+	}
+	log.Debug("discover tenants done", zap.String("hour", hb.String()), zap.Int("count", len(tenants)))
+
+	hm := newHourMeta(ns, hb, HourStatusPartial)
+	for _, tk := range tenants {
+		row, err := tenantRowForKey(hourBase, tk)
 		if err != nil {
-			return err
+			log.Debug("tenant shard path skipped", zap.String("tenant_key", tk), zap.Error(err))
+			hm.Tenants = append(hm.Tenants, TenantMetaRow{TenantKey: tk, Error: err.Error()})
+			continue
 		}
-		log.Debug("discover tenants done",
-			zap.String("hour", hb.String()),
-			zap.Int("count", len(tenants)),
-		)
-		hm = newHourMeta(ns, hb, HourStatusInProgress)
-		for _, tk := range tenants {
-			row, err := tenantRowForKey(hourBase, tk)
-			if err != nil {
-				log.Debug("tenant shard path skipped",
-					zap.String("tenant_key", tk),
-					zap.Error(err),
-				)
-				hm.Tenants = append(hm.Tenants, TenantMetaRow{TenantKey: tk, Error: err.Error()})
-				continue
-			}
-			hm.Tenants = append(hm.Tenants, row)
-		}
-		log.Debug("hour meta initial save", zap.String("hour_meta_key", hourMetaKey), zap.Int("tenant_rows", len(hm.Tenants)))
-		if err := meta.SaveHourMeta(ctx, hourBase, hm); err != nil {
-			return err
-		}
-		setCollectionActive(collMeta, collBase, hb, hourMetaKey, HourStatusInProgress)
-		if err := meta.SaveCollectionMeta(ctx, collBase, collMeta); err != nil {
-			return err
-		}
+		hm.Tenants = append(hm.Tenants, row)
+	}
+	log.Debug("hour meta initial save", zap.String("hour_meta_key", hourMetaKey), zap.Int("tenant_rows", len(hm.Tenants)))
+	if err := meta.SaveHourMeta(ctx, hourBase, hm); err != nil {
+		return err
+	}
+	setCollectionActive(collMeta, collBase, hb, hourMetaKey, HourStatusPartial)
+	if err := meta.SaveCollectionMeta(ctx, collBase, collMeta); err != nil {
+		return err
 	}
 
 	for i := range hm.Tenants {
@@ -337,15 +321,7 @@ func processHour(
 			return persistShutdown(meta, log, ns, collBase, collMeta, hourBase, hm, hb, coord)
 		}
 		row := &hm.Tenants[i]
-		if row.Uploaded && row.Error == "" {
-			log.Debug("skip tenant already uploaded",
-				zap.String("hour", hb.String()),
-				zap.String("tenant", row.TenantKey),
-				zap.String("object_key", row.ObjectKey),
-			)
-			continue
-		}
-		if row.Error != "" && row.Uploaded {
+		if row.Error != "" {
 			continue
 		}
 		if err := backupOneTenant(ctx, cfg, remote, meta, archiver, log, opts, ns, collBase, hourBase, hb, hm, row, i, coord); err != nil {
@@ -399,12 +375,10 @@ func tenantRowForKey(hourBase, tenantKey string) (TenantMetaRow, error) {
 		return TenantMetaRow{}, err
 	}
 	rel := TenantDataRelPath(shard, tenantKey)
-	obj := TenantObjectKey(hourBase, rel)
 	return TenantMetaRow{
 		TenantKey:   tenantKey,
 		Shard:       shard,
 		DataRelPath: rel,
-		ObjectKey:   obj,
 	}, nil
 }
 
@@ -432,10 +406,9 @@ func backupOneTenant(
 		return err
 	}
 	rel := TenantDataRelPath(shard, row.TenantKey)
-	obj := TenantObjectKey(hourBase, rel)
+	ossKey := TenantObjectKey(hourBase, rel)
 	row.Shard = shard
 	row.DataRelPath = rel
-	row.ObjectKey = obj
 	row.Error = ""
 
 	workDir := cfg.AbsStaging("hourly", ns.DB, ns.Coll, hb.String(), row.TenantKey)
@@ -444,8 +417,8 @@ func backupOneTenant(
 		zap.String("hour", hb.String()),
 		zap.String("tenant", row.TenantKey),
 		zap.String("shard", shard),
+		zap.String("data_rel_path", rel),
 		zap.String("work_dir", workDir),
-		zap.String("object_key", obj),
 	)
 	tenantCtx := ctx
 	if coord != nil {
@@ -456,7 +429,7 @@ func backupOneTenant(
 		return err
 	}
 	log.Debug("uploading dump.tar", zap.String("local", tarPath), zap.Int64("size_bytes", size))
-	if err := remote.UploadFile(tenantCtx, tarPath, obj); err != nil {
+	if err := remote.UploadFile(tenantCtx, tarPath, ossKey); err != nil {
 		return err
 	}
 	row.Uploaded = true
@@ -464,7 +437,7 @@ func backupOneTenant(
 	row.SizeBytes = size
 	log.Info("tenant uploaded",
 		zap.String("tenant", row.TenantKey),
-		zap.String("object_key", obj),
+		zap.String("data_rel_path", rel),
 		zap.String("sha256", sha),
 	)
 	if opts.CleanupLocal {
@@ -546,13 +519,8 @@ func persistShutdown(meta *MetaStore, log *zap.Logger, ns NSSpec, collBase strin
 		}
 		return context.Canceled
 	}
-	graceful := coord != nil && coord.Stopping() && !coord.Forced()
-	if hm.Status == HourStatusInProgress && !graceful {
-		// Forced cancel: mark partial so operators know the hour was interrupted.
-		hm.Status = HourStatusPartial
-	}
-	// Graceful first Ctrl+C: keep in_progress so the next run resumes uploaded tenants.
-	setCollectionActive(collMeta, collBase, hb, HourMetaKey(hourBase), hm.Status)
+	hm.Status = HourStatusPartial
+	setCollectionActive(collMeta, collBase, hb, HourMetaKey(hourBase), HourStatusPartial)
 	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := meta.SaveHourMeta(persistCtx, hourBase, hm); err != nil {
@@ -563,11 +531,9 @@ func persistShutdown(meta *MetaStore, log *zap.Logger, ns NSSpec, collBase strin
 	if coord != nil {
 		coord.NotifyPersisted()
 	}
-	log.Warn("shutdown requested, resumable checkpoint saved",
+	log.Warn("shutdown requested, checkpoint saved (hour remains partial; next run will wipe and re-backup)",
 		zap.String("collection", ns.String()),
 		zap.String("hour", hb.String()),
-		zap.String("hour_status", string(hm.Status)),
-		zap.Bool("graceful", graceful),
 		zap.Bool("forced", coord != nil && coord.Forced()),
 		zap.Int("uploaded", countUploaded(hm.Tenants)),
 		zap.Int("tenants", len(hm.Tenants)),

@@ -17,7 +17,7 @@
 ```
 
 - **`shard`**：`tenant_key` 最后一个 `_` 之后后缀的 **前 2 字符**（例 `isolation_1eff7eac...` → `1e`）。
-- **小时状态**：`in_progress` | `partial` | `complete`（未结束 UTC 小时备份后标 `partial`；下一调度对 `partial` **整桶覆盖**重备）。
+- **小时状态**：`partial` | `complete`（未完成一律 `partial`；下次调度 **整桶删除后全量重备**）。
 - **同进程中断**（SIGINT/SIGTERM）：按 hour meta 中 `uploaded` **续跑**已成功租户。
 
 ## 依赖
