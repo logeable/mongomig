@@ -59,7 +59,26 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 			ctx, cancel := notifyContext()
 			defer cancel()
 
-			specs, err := backup.ResolveCollectionSpecs(ctx, cfg.MongoURI, dbName, collections)
+			logger.Debug("backup config",
+				zap.String("db", dbName),
+				zap.String("staging_dir", cfg.StagingDir),
+				zap.String("remote_prefix", cfg.RemotePrefix),
+				zap.Bool("gzip", cfg.Gzip),
+				zap.Bool("dry_run", dryRun),
+				zap.Bool("force_hour", forceHour),
+				zap.String("tenant_field", tenantField),
+				zap.String("time_field", timeField),
+			)
+			if cfg.S3 != nil {
+				logger.Debug("s3 config",
+					zap.String("endpoint", cfg.S3.Endpoint),
+					zap.String("region", cfg.S3.Region),
+					zap.String("bucket", cfg.S3.Bucket),
+					zap.Bool("path_style", cfg.S3.UsePathStyle),
+				)
+			}
+
+			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections)
 			if err != nil {
 				return err
 			}
@@ -79,6 +98,7 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 					return err
 				}
 			}
+			logger.Debug("backup hour window", zap.String("to_hour", to.String()))
 			var from *backup.HourBucket
 			if strings.TrimSpace(fromHour) != "" {
 				fb, err := backup.ParseHourFlag(fromHour)
@@ -86,6 +106,7 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 					return err
 				}
 				from = &fb
+				logger.Debug("backup hour window", zap.String("from_hour", from.String()))
 			}
 			var reset *backup.HourBucket
 			if strings.TrimSpace(resetHour) != "" {

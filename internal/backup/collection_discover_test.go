@@ -5,7 +5,7 @@ import (
 )
 
 func TestResolveCollectionSpecs_explicitNames(t *testing.T) {
-	specs, err := ResolveCollectionSpecs(t.Context(), "", "revol", "a,b")
+	specs, err := ResolveCollectionSpecs(t.Context(), nil, "", "revol", "a,b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -15,7 +15,7 @@ func TestResolveCollectionSpecs_explicitNames(t *testing.T) {
 }
 
 func TestResolveCollectionSpecs_dbDotColl(t *testing.T) {
-	specs, err := ResolveCollectionSpecs(t.Context(), "", "revol", "other.c1")
+	specs, err := ResolveCollectionSpecs(t.Context(), nil, "", "revol", "other.c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestResolveCollectionSpecs_dbDotColl(t *testing.T) {
 }
 
 func TestResolveCollectionSpecs_requiresDB(t *testing.T) {
-	_, err := ResolveCollectionSpecs(t.Context(), "", "", "")
+	_, err := ResolveCollectionSpecs(t.Context(), nil, "", "", "")
 	if err == nil {
 		t.Fatal("expected error without db")
 	}

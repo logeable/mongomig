@@ -9,19 +9,24 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.uber.org/zap"
 )
 
 // ResolveCollectionSpecs returns namespaces to back up.
 // dbName is required. If collectionsCSV is empty, lists all non-system collections in dbName.
 // If collectionsCSV is set, each entry may be "coll" or "otherdb.coll" (only the first dot splits).
-func ResolveCollectionSpecs(ctx context.Context, mongoURI, dbName, collectionsCSV string) ([]NSSpec, error) {
+// log may be nil.
+func ResolveCollectionSpecs(ctx context.Context, log *zap.Logger, mongoURI, dbName, collectionsCSV string) ([]NSSpec, error) {
 	dbName = strings.TrimSpace(dbName)
 	if dbName == "" {
 		return nil, fmt.Errorf("--db is required (mongomig.yaml or --db)")
 	}
 	collectionsCSV = strings.TrimSpace(collectionsCSV)
 	if collectionsCSV == "" {
-		names, err := DiscoverCollectionsInDB(ctx, mongoURI, dbName)
+		if log != nil {
+			log.Debug("auto-discover collections in database", zap.String("db", dbName))
+		}
+		names, err := DiscoverCollectionsInDB(ctx, log, mongoURI, dbName)
 		if err != nil {
 			return nil, err
 		}
@@ -30,6 +35,9 @@ func ResolveCollectionSpecs(ctx context.Context, mongoURI, dbName, collectionsCS
 			specs[i] = NSSpec{DB: dbName, Coll: c}
 		}
 		return specs, nil
+	}
+	if log != nil {
+		log.Debug("using explicit collection list", zap.String("db", dbName), zap.String("collections", collectionsCSV))
 	}
 	var out []NSSpec
 	for _, part := range strings.Split(collectionsCSV, ",") {
@@ -54,10 +62,14 @@ func ResolveCollectionSpecs(ctx context.Context, mongoURI, dbName, collectionsCS
 }
 
 // DiscoverCollectionsInDB lists user collection names in db (excludes system.*).
-func DiscoverCollectionsInDB(ctx context.Context, mongoURI, dbName string) ([]string, error) {
+// log may be nil.
+func DiscoverCollectionsInDB(ctx context.Context, log *zap.Logger, mongoURI, dbName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
+	if log != nil {
+		log.Debug("listCollections", zap.String("db", dbName))
+	}
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
@@ -89,6 +101,9 @@ func DiscoverCollectionsInDB(ctx context.Context, mongoURI, dbName string) ([]st
 	}
 	if len(names) == 0 {
 		return nil, fmt.Errorf("no collections found in database %q", dbName)
+	}
+	if log != nil {
+		log.Debug("collections discovered", zap.String("db", dbName), zap.Strings("names", names), zap.Int("count", len(names)))
 	}
 	return names, nil
 }

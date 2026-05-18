@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/logeable/mongomig/internal/config"
 	"github.com/logeable/mongomig/internal/execwrap"
 )
@@ -26,7 +28,16 @@ func NewTenantHourArchive(cfg *config.Root) *TenantHourArchive {
 }
 
 // DumpAndTar returns path to dump.tar, sha256 hex, size bytes.
-func (a *TenantHourArchive) DumpAndTar(ctx context.Context, ns NSSpec, tenantField, tenantKey string, tenantNumeric bool, timeField string, startUTC, endUTC time.Time, workDir string) (tarPath, sha string, size int64, err error) {
+func (a *TenantHourArchive) DumpAndTar(ctx context.Context, log *zap.Logger, ns NSSpec, tenantField, tenantKey string, tenantNumeric bool, timeField string, startUTC, endUTC time.Time, workDir string) (tarPath, sha string, size int64, err error) {
+	if log != nil {
+		log.Debug("mongodump prepare",
+			zap.String("tenant", tenantKey),
+			zap.String("collection", ns.String()),
+			zap.Time("start_utc", startUTC),
+			zap.Time("end_utc", endUTC),
+			zap.String("work_dir", workDir),
+		)
+	}
 	if err := os.RemoveAll(workDir); err != nil {
 		return "", "", 0, err
 	}
@@ -37,9 +48,15 @@ func (a *TenantHourArchive) DumpAndTar(ctx context.Context, ns NSSpec, tenantFie
 	if err := WriteTenantDayRangeQueryFile(queryFile, tenantField, tenantKey, tenantNumeric, timeField, startUTC, endUTC); err != nil {
 		return "", "", 0, err
 	}
+	if log != nil {
+		log.Debug("mongodump query file written", zap.String("path", queryFile))
+	}
 	stagingOut := filepath.Join(workDir, "dump_out")
 	if err := a.tools.DumpCollectionQuery(ctx, ns.DB, ns.Coll, stagingOut, queryFile); err != nil {
 		return "", "", 0, err
+	}
+	if log != nil {
+		log.Debug("mongodump finished", zap.String("out", stagingOut))
 	}
 	tarPath = filepath.Join(workDir, "dump.tar")
 	if err := tarDirectory(ctx, stagingOut, tarPath); err != nil {
@@ -48,6 +65,9 @@ func (a *TenantHourArchive) DumpAndTar(ctx context.Context, ns NSSpec, tenantFie
 	h, size, err := fileSHA256(tarPath)
 	if err != nil {
 		return "", "", 0, err
+	}
+	if log != nil {
+		log.Debug("dump.tar ready", zap.String("path", tarPath), zap.Int64("size_bytes", size), zap.String("sha256", h))
 	}
 	return tarPath, h, size, nil
 }
