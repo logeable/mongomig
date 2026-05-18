@@ -30,6 +30,8 @@ type Root struct {
 
 	// Object key prefix for remote layout, e.g. "mongomig/prod".
 	RemotePrefix string `json:"remote_prefix,omitempty"`
+
+	LogLevel string `json:"log_level,omitempty"`
 }
 
 type S3 struct {
