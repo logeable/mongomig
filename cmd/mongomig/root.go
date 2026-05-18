@@ -44,6 +44,6 @@ func newRoot() *cobra.Command {
 	_ = v.BindPFlag("s3.secret_access_key", pf.Lookup("s3-secret-key"))
 	_ = v.BindPFlag("log_level", pf.Lookup("log-level"))
 
-	root.AddCommand(newBackupCmd(v), newRestoreCmd(), newStatusCmd())
+	root.AddCommand(newBackupCmd(v), newRestoreCmd(), newStatusCmd(v), newRepairCmd(v))
 	return root
 }
