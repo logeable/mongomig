@@ -235,7 +235,7 @@ func resolveStartHour(ctx context.Context, mongoURI string, ns NSSpec, opts Hour
 	if cm.NewestCompleted != nil {
 		return cm.NewestCompleted.Bucket().Next(), nil
 	}
-	minT, _, ok, err := MinMaxTimeFieldForCollection(ctx, mongoURI, ns, opts.TimeField)
+	minT, ok, err := MinTimeFieldForCollection(ctx, mongoURI, ns, opts.TimeField)
 	if err != nil {
 		return HourBucket{}, err
 	}
