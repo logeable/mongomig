@@ -23,44 +23,32 @@ func MinTimeFieldForCollection(ctx context.Context, mongoURI string, ns NSSpec, 
 
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("connect: %w", err)
+		return time.Time{}, false, err
 	}
 	defer func() { _ = client.Disconnect(context.Background()) }()
 
 	coll := client.Database(ns.DB).Collection(ns.Coll)
-	filter := bson.M{timeField: bson.M{"$exists": true, "$ne": nil}}
 	findOpts := options.FindOne().
 		SetSort(bson.D{{Key: timeField, Value: 1}}).
 		SetHint(bson.D{{Key: timeField, Value: 1}}).
 		SetProjection(bson.M{"_id": 0, timeField: 1})
 
-	var doc bson.M
-	err = coll.FindOne(ctx, filter, findOpts).Decode(&doc)
+	var raw bson.Raw
+	err = coll.FindOne(ctx, bson.D{}, findOpts).Decode(&raw)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("find min %s.%s.%s: %w", ns.DB, ns.Coll, timeField, err)
+		return time.Time{}, false, err
 	}
-	t, ok := bsonTimeValue(doc[timeField])
-	if !ok {
-		return time.Time{}, false, nil
+	elem, err := raw.LookupErr(timeField)
+	if err != nil {
+		return time.Time{}, false, err
 	}
-	return t, true, nil
-}
-
-func bsonTimeValue(v any) (time.Time, bool) {
-	switch t := v.(type) {
-	case time.Time:
-		return t, true
-	case *time.Time:
-		if t == nil {
-			return time.Time{}, false
-		}
-		return *t, true
-	default:
-		return time.Time{}, false
+	if err := elem.Unmarshal(&minT); err != nil {
+		return time.Time{}, false, err
 	}
+	return minT, true, nil
 }
 
 // MinMaxTimeFieldForCollection returns min/max of timeField across the collection.

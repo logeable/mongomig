@@ -16,17 +16,17 @@ import (
 
 // HourlySyncOpts configures RunHourlyOSSSync.
 type HourlySyncOpts struct {
-	Collections    []NSSpec
-	TenantField    string
-	TimeField      string
-	TenantNumeric  bool
-	FromHour       *HourBucket
-	ToHour         HourBucket
-	CleanupLocal   bool
-	DryRun         bool
-	ForceHour      bool
-	RemotePrefix   string
-	Shutdown       *shutdown.Coordinator
+	Collections   []NSSpec
+	TenantField   string
+	TimeField     string
+	TenantNumeric bool
+	FromHour      *HourBucket
+	ToHour        HourBucket
+	CleanupLocal  bool
+	DryRun        bool
+	ForceHour     bool
+	RemotePrefix  string
+	Shutdown      *shutdown.Coordinator
 }
 
 // RunHourlyOSSSync backs up each collection by UTC hour buckets to OSS.

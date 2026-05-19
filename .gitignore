@@ -1,4 +1,5 @@
 /mongomig
+/mongomig-linux
 *.exe
 .DS_Store
 .idea/
