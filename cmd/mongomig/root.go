@@ -16,6 +16,7 @@ func newRoot() *cobra.Command {
 	}
 
 	pf := root.PersistentFlags()
+	pf.String("config", "", "Config file path (default: ./mongomig.yaml in CWD)")
 	pf.String("mongo-uri", "", "MongoDB URI (MONGOMIG_MONGO_URI)")
 	pf.String("staging-dir", "", "Local staging directory")
 	pf.Bool("gzip", true, "mongodump --gzip")
@@ -30,6 +31,7 @@ func newRoot() *cobra.Command {
 	pf.String("s3-secret-key", "", "S3 secret key")
 	pf.String("log-level", "info", "Log level: debug, info, warn, error")
 
+	_ = v.BindPFlag("config", pf.Lookup("config"))
 	_ = v.BindPFlag("mongo_uri", pf.Lookup("mongo-uri"))
 	_ = v.BindPFlag("staging_dir", pf.Lookup("staging-dir"))
 	_ = v.BindPFlag("gzip", pf.Lookup("gzip"))

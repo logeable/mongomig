@@ -24,7 +24,7 @@
 
 - Go 1.23+
 - [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/)：`mongodump`（及系统 `tar`）
-- 配置：项目根目录 **`mongomig.yaml`**（可参考 `mongomig.example.yaml`）；命令行 flags 可覆盖
+- 配置：**`mongomig.yaml`**（当前目录，可参考 `mongomig.example.yaml`），或 **`--config /path/to/file.yaml`**；命令行 flags 可覆盖
 
 ## 构建
 
@@ -35,7 +35,8 @@ go build -o mongomig ./cmd/mongomig
 ## 备份
 
 ```bash
-./mongomig --mongo-uri "$MONGOMIG_MONGO_URI" --staging-dir ./staging \
+./mongomig --config ./mongomig.yaml \
+  --mongo-uri "$MONGOMIG_MONGO_URI" --staging-dir ./staging \
   --remote-prefix mongomig \
   --s3-endpoint "https://tos-s3-cn-shanghai.volces.com" \
   --s3-bucket "your-bucket" --s3-region "cn-shanghai" \

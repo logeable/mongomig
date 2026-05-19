@@ -1,4 +1,5 @@
-# Copy to mongomig.yaml and adjust. CLI flags override these values when set.
+# Copy to mongomig.yaml (CWD) or pass: mongomig --config /path/to/this/file.yaml backup ...
+# CLI flags override these values when set.
 
 mongo_uri: "mongodb://user:pass@localhost:27017/?authSource=admin"
 staging_dir: "./staging"

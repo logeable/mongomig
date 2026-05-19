@@ -1,12 +1,15 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/viper"
 )
 
-// LoadViper reads defaults, mongomig.yaml, then CLI flags already bound on v.
+// LoadViper reads defaults, config file, then CLI flags already bound on v.
+// Config file: --config path, else ./mongomig.yaml in the current working directory (optional).
 func LoadViper(v *viper.Viper) (*Root, error) {
 	if v == nil {
 		v = viper.New()
@@ -23,10 +26,9 @@ func LoadViper(v *viper.Viper) (*Root, error) {
 	v.SetDefault("s3.region", "us-east-1")
 	v.SetDefault("s3.use_path_style", false)
 
-	v.SetConfigName("mongomig")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	_ = v.ReadInConfig()
+	if err := readViperConfig(v); err != nil {
+		return nil, err
+	}
 
 	root := &Root{
 		MongoURI:            v.GetString("mongo_uri"),
@@ -52,4 +54,26 @@ func LoadViper(v *viper.Viper) (*Root, error) {
 		}
 	}
 	return root, nil
+}
+
+func readViperConfig(v *viper.Viper) error {
+	configPath := strings.TrimSpace(v.GetString("config"))
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("read config %q: %w", configPath, err)
+		}
+		return nil
+	}
+	v.SetConfigName("mongomig")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	if err := v.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("read config: %w", err)
+	}
+	return nil
 }
