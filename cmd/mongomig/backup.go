@@ -147,7 +147,7 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().BoolVar(&tenantNumeric, "tenant-key-numeric", false, "Tenant id is numeric JSON in queries")
 	cmd.Flags().StringVar(&fromHour, "from-hour", "", "First UTC hour YYYY-MM-DDTHH")
 	cmd.Flags().StringVar(&toHour, "to-hour", "", "Last UTC hour inclusive (default: current UTC hour)")
-	cmd.Flags().BoolVar(&cleanupLocal, "cleanup-local", false, "Remove local staging per tenant after upload")
+	cmd.Flags().BoolVar(&cleanupLocal, "cleanup-local", true, "Remove local staging per tenant after upload")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan only; no dump/upload")
 	cmd.Flags().BoolVar(&forceHour, "force-hour", false, "Re-backup hours already marked complete")
 	cmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 30*time.Second, "After first Ctrl+C, wait up to this long for current tenant to finish before force cancel")
