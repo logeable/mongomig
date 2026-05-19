@@ -4,7 +4,7 @@
 
 ## 工具定位
 
-- **主命令**：`mongomig backup`（`restore` / `status` 已注册，本期为占位）。
+- **主命令**：`mongomig backup`；`mongomig restore` 从 OSS 按小时恢复租户 dump；`mongomig status` / `repair` 审计与修复 meta。
 - **OSS 布局**：
 
 ```text
@@ -75,11 +75,41 @@ s3:
 
 火山 TOS 建议使用地域 endpoint，且 **`use_path_style: false`**（virtual-hosted）。
 
-## 恢复（未实现）
+## 恢复
+
+### 用户场景
+
+| 场景 | 命令 | 小时范围 |
+|------|------|----------|
+| **首次灌空库** | `restore --db revol --collections c --drop` | OSS `oldest_completed` → `newest_completed` |
+| **日常增量**（backup 后又跑了新小时） | `restore --db revol --collections c` | checkpoint `newest_restored+1` → OSS `newest_completed` |
+| **中断续跑** | 同上（自动跳过已完成租户） | 同上 |
+| **换集群 / 全量重灌** | `restore --db revol --drop --reset-checkpoint` | 清 checkpoint 后从 OSS 最旧小时重来 |
+| **只恢复某段** | `restore ... --from-hour ... --to-hour ...` | 显式覆盖上表 |
+
+约定：只恢复 OSS 上 **`status=complete`** 的小时；`partial` 用 `mongomig status` 查看后对该小时 `backup` 补全，再 `restore`。
+
+### 命令与参数
 
 ```bash
-./mongomig restore   # 返回「尚未实现」
-./mongomig status    # 返回「尚未实现」
+./mongomig --config ./mongomig.yaml restore \
+  --db revol \
+  [--collections "coll_a,coll_b"] \
+  [--from-hour 2026-05-15T00] [--to-hour 2026-05-15T17] \
+  [--drop] [--reset-checkpoint] [--dry-run]
 ```
 
-将来 restore：`tar -xf dump.tar` 后 `mongorestore --gzip`。
+| Flag | 说明 |
+|------|------|
+| `--db` | 目标库（恢复写入 `mongo_uri`；checkpoint 存在该库下） |
+| `--collections` | 可选；默认发现该库全部非 system 集合 |
+| `--from-hour` / `--to-hour` | 可选；覆盖自动范围（见上表） |
+| `--drop` | 空库首次灌入：每个集合第一次 mongorestore 前 drop |
+| `--reset-checkpoint` | 删除 `{db}._mongomig_restore` 中该集合进度文档 |
+| `--dry-run` | 只打印计划 |
+
+**配置项**（非命令行）：`restore_checkpoint_collection`（默认 `_mongomig_restore`）、`mongo_uri`、`remote_prefix`、`staging_dir`（仅作下载临时目录，进度不落盘）。
+
+**Checkpoint**：`{db}.{restore_checkpoint_collection}` 中 `_id={remote_prefix}/{db}/{collection}`，记录已恢复小时/租户。已有 checkpoint 时 `--drop` 不会再次 drop。
+
+流程：下载 `dump.tar` → 解压 → `mongorestore --gzip`。

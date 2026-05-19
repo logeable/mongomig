@@ -84,6 +84,19 @@ func tarDirectory(ctx context.Context, stagingRoot, tarPath string) error {
 	return nil
 }
 
+func untarDirectory(ctx context.Context, tarPath, destDir string) error {
+	if err := os.MkdirAll(destDir, 0o750); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "tar", "-xf", tarPath, "-C", destDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tar -xf: %w", err)
+	}
+	return nil
+}
+
 func fileSHA256(path string) (hexDigest string, size int64, err error) {
 	f, err := os.Open(path)
 	if err != nil {

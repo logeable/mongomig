@@ -25,6 +25,7 @@ func LoadViper(v *viper.Viper) (*Root, error) {
 	v.SetDefault("log_level", "info")
 	v.SetDefault("s3.region", "us-east-1")
 	v.SetDefault("s3.use_path_style", false)
+	v.SetDefault("restore_checkpoint_collection", DefaultRestoreCheckpointCollection)
 
 	if err := readViperConfig(v); err != nil {
 		return nil, err
@@ -41,7 +42,8 @@ func LoadViper(v *viper.Viper) (*Root, error) {
 		RestoreTimeout:      v.GetDuration("restore_timeout"),
 		RemotePrefix:        strings.Trim(v.GetString("remote_prefix"), "/"),
 		LogLevel:            v.GetString("log_level"),
-		DB:                  strings.TrimSpace(v.GetString("db")),
+		DB:                          strings.TrimSpace(v.GetString("db")),
+		RestoreCheckpointCollection: strings.TrimSpace(v.GetString("restore_checkpoint_collection")),
 	}
 	if ep := v.GetString("s3.endpoint"); ep != "" {
 		root.S3 = &S3{

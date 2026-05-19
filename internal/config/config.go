@@ -35,7 +35,13 @@ type Root struct {
 
 	// Default database for backup when using collection auto-discovery.
 	DB string `json:"db,omitempty"`
+
+	// RestoreCheckpointCollection stores restore progress (default _mongomig_restore).
+	RestoreCheckpointCollection string `json:"restore_checkpoint_collection,omitempty"`
 }
+
+// DefaultRestoreCheckpointCollection is the MongoDB collection name for restore progress documents.
+const DefaultRestoreCheckpointCollection = "_mongomig_restore"
 
 type S3 struct {
 	Endpoint        string `json:"endpoint"`

@@ -5,6 +5,7 @@ mongo_uri: "mongodb://user:pass@localhost:27017/?authSource=admin"
 staging_dir: "./staging"
 db: "revol"
 remote_prefix: "mongomig"
+restore_checkpoint_collection: "_mongomig_restore"
 log_level: "info"
 gzip: true
 
