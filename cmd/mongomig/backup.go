@@ -27,7 +27,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 		cleanupLocal  bool
 		dryRun        bool
 		forceHour     bool
-		resetHour      string
 		shutdownGrace  time.Duration
 	)
 	cmd := &cobra.Command{
@@ -111,15 +110,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 				from = &fb
 				logger.Debug("backup hour window", zap.String("from_hour", from.String()))
 			}
-			var reset *backup.HourBucket
-			if strings.TrimSpace(resetHour) != "" {
-				rh, err := backup.ParseHourFlag(resetHour)
-				if err != nil {
-					return err
-				}
-				reset = &rh
-			}
-
 			remote, err := storage.NewRemote(ctx, cfg)
 			if err != nil {
 				return err
@@ -134,7 +124,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 				CleanupLocal:  cleanupLocal,
 				DryRun:        dryRun,
 				ForceHour:     forceHour,
-				ResetHour:     reset,
 				RemotePrefix:  cfg.RemotePrefix,
 				Shutdown:      coord,
 			}
@@ -161,7 +150,6 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 	cmd.Flags().BoolVar(&cleanupLocal, "cleanup-local", false, "Remove local staging per tenant after upload")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Plan only; no dump/upload")
 	cmd.Flags().BoolVar(&forceHour, "force-hour", false, "Re-backup hours already marked complete")
-	cmd.Flags().StringVar(&resetHour, "reset-hour", "", "Delete OSS prefix for one UTC hour before backup")
 	cmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 30*time.Second, "After first Ctrl+C, wait up to this long for current tenant to finish before force cancel")
 	_ = v.BindPFlag("db", cmd.Flags().Lookup("db"))
 	return cmd

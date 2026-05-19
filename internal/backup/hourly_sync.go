@@ -25,7 +25,6 @@ type HourlySyncOpts struct {
 	CleanupLocal   bool
 	DryRun         bool
 	ForceHour      bool
-	ResetHour      *HourBucket
 	RemotePrefix   string
 	Shutdown       *shutdown.Coordinator
 }
@@ -44,9 +43,6 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 	)
 	if opts.FromHour != nil {
 		log.Debug("hourly sync from_hour override", zap.String("from_hour", opts.FromHour.String()))
-	}
-	if opts.ResetHour != nil {
-		log.Debug("hourly sync reset_hour", zap.String("reset_hour", opts.ResetHour.String()))
 	}
 
 	meta, err := NewMetaStore(remote, cfg.StagingDir)
@@ -89,15 +85,6 @@ func RunHourlyOSSSync(ctx context.Context, cfg *config.Root, remote storage.Back
 		)
 		logCollectionMeta(log, collMeta)
 		warnCompletedGap(log, collMeta)
-
-		if opts.ResetHour != nil {
-			hb := *opts.ResetHour
-			hourBase := HourBase(collBase, hb)
-			log.Warn("reset-hour: deleting hour prefix", zap.String("hour", hb.String()))
-			if err := remote.DeletePrefix(ctx, hourBase+"/"); err != nil {
-				return err
-			}
-		}
 
 		startHour, err := resolveStartHour(ctx, cfg.MongoURI, ns, opts, collMeta)
 		if err != nil {

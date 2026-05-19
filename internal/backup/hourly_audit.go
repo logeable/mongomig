@@ -182,7 +182,7 @@ func hourAuditRowFromMeta(collectionBase, hourBase, metaKey string, hm *HourMeta
 }
 
 func fixHintMissingHourMeta(b HourBucket) string {
-	return fmt.Sprintf("OSS 上有 meta.json 路径但读失败；可 mongomig backup --reset-hour %s 后重跑", b.String())
+	return fmt.Sprintf("OSS 上有 meta.json 路径但读失败；用 --from-hour %s --to-hour %s 重跑（partial 会自动整桶重备）", b.String(), b.String())
 }
 
 func fixHintForHour(row HourAuditRow) string {
@@ -204,8 +204,7 @@ func fixHintForHour(row HourAuditRow) string {
 	if row.TenantErrors > 0 {
 		parts = append(parts, fmt.Sprintf("%d 个租户带 error", row.TenantErrors))
 	}
-	parts = append(parts, fmt.Sprintf("修复: mongomig backup --db ... --collections ... --from-hour %s --to-hour %s（会自动 DeletePrefix 整小时重备）", h, h))
-	parts = append(parts, fmt.Sprintf("或先删: mongomig backup --reset-hour %s 再 backup", h))
+	parts = append(parts, fmt.Sprintf("修复: mongomig backup --db ... --collections ... --from-hour %s --to-hour %s（partial 会自动 DeletePrefix 整小时重备）", h, h))
 	return strings.Join(parts, "; ")
 }
 

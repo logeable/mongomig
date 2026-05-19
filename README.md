@@ -46,7 +46,7 @@ go build -o mongomig ./cmd/mongomig
   [--tenant-field tenant_key] \
   [--time-field created_at] \
   [--from-hour 2026-05-15T00] [--to-hour 2026-05-15T17] \
-  [--cleanup-local] [--dry-run] [--force-hour] [--reset-hour 2026-05-15T17]
+  [--cleanup-local] [--dry-run] [--force-hour]
 ```
 
 | Flag | 说明 |
@@ -55,7 +55,6 @@ go build -o mongomig ./cmd/mongomig
 | `--collections` | 可选；逗号分隔**集合名**（相对 `--db`）。省略则自动 `listCollections` 发现该库下全部非 system 集合 |
 | `--from-hour` / `--to-hour` | UTC `YYYY-MM-DDTHH`；默认 `to` = 当前 UTC 小时 |
 | `--force-hour` | 已 `complete` 的小时仍重备 |
-| `--reset-hour` | 先删除该小时 OSS 前缀再备 |
 
 ## 配置文件 `mongomig.yaml`
 

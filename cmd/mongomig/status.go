@@ -132,7 +132,7 @@ func printGlobalFixGuide() {
   • 非法 status (如 in_progress): backup 会直接失败；先执行:
     mongomig repair normalize --db <db> --collections <c>
     再对对应小时跑 backup（同上 --from-hour/--to-hour）。
-  • 想清空某小时 OSS 数据: mongomig backup --reset-hour 2026-05-18T07 再 backup。
+  • 重备已 complete 的小时: mongomig backup --force-hour --from-hour ... --to-hour ...
   • collection active 非法: repair normalize 会把 active.status 改为 partial；或 repair clear-active 清空 active。
   • newest_completed 与 active 之间有缺口: 直接 mongomig backup，会从 newest_completed+1 顺序补。`)
 }
