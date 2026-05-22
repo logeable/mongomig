@@ -246,10 +246,14 @@ func restoreHour(
 		return persistRestoreShutdown(log, opts, ns, hb)
 	}
 	if !opts.DryRun {
-		cp.setRestoreActive(hb, hm.Status)
 		if hourComplete {
 			cp.markHourComplete(hb)
 		}
+		ossCollMeta, _, err := meta.LoadCollectionMeta(ctx, collBase)
+		if err != nil {
+			return err
+		}
+		cp.syncActiveFromBackup(ossCollMeta)
 		if err := cpStore.Save(ctx, cp, ns); err != nil {
 			return err
 		}

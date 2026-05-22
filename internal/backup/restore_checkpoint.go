@@ -30,8 +30,7 @@ type RestoreCheckpoint struct {
 	CollectionBase string    `bson:"collection_base"`
 	OldestRestored *HourRef  `bson:"oldest_restored,omitempty"`
 	NewestRestored *HourRef  `bson:"newest_restored,omitempty"`
-	// Active records the last UTC hour whose uploaded tenants were restored (OSS status at restore time).
-	// Not used for scheduling or skip logic.
+	// Active mirrors OSS collection meta active (backup in-flight partial hour). Audit only; not used for scheduling.
 	Active    *HourRef  `bson:"active,omitempty"`
 	UpdatedAt time.Time `bson:"updated_at"`
 }
@@ -148,15 +147,22 @@ func (cp *RestoreCheckpoint) hourAlreadyRestored(hb HourBucket) bool {
 	return !hb.Start.After(cp.NewestRestored.Bucket().Start)
 }
 
-func (cp *RestoreCheckpoint) setRestoreActive(hb HourBucket, ossStatus HourStatus) {
-	ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), ossStatus)
+// syncActiveFromBackup copies collection meta active from OSS (same semantics as backup).
+func (cp *RestoreCheckpoint) syncActiveFromBackup(collMeta *CollectionMeta) {
+	if cp == nil {
+		return
+	}
+	if collMeta == nil || collMeta.Active == nil {
+		cp.Active = nil
+		return
+	}
+	ref := *collMeta.Active
 	cp.Active = &ref
 }
 
 func (cp *RestoreCheckpoint) markHourComplete(hb HourBucket) {
 	ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), HourStatusComplete)
 	cp.NewestRestored = &ref
-	cp.Active = &ref
 	if cp.OldestRestored == nil {
 		cp.OldestRestored = &ref
 	}

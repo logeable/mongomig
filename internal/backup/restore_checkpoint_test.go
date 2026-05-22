@@ -72,15 +72,22 @@ func TestHourAlreadyRestored(t *testing.T) {
 	}
 }
 
-func TestSetRestoreActive_recordsHour(t *testing.T) {
-	hb := HourBucketUTC(mustParseRFC3339("2026-05-18T07:00:00Z"))
+func TestSyncActiveFromBackup_mirrorsOSS(t *testing.T) {
 	cp := newRestoreCheckpoint("mongomig", "mongomig/db/coll", "mongodb://localhost", NSSpec{DB: "db", Coll: "coll"})
-	cp.setRestoreActive(hb, HourStatusPartial)
+	cp.syncActiveFromBackup(&CollectionMeta{
+		Active: &HourRef{
+			Year: 2026, Month: 5, Day: 18, Hour: 7,
+			IntervalStartUTC: "2026-05-18T07:00:00Z",
+			IntervalEndUTC:   "2026-05-18T08:00:00Z",
+			Status:           HourStatusPartial,
+		},
+	})
 	if cp.Active == nil || cp.Active.Hour != 7 || cp.Active.Status != HourStatusPartial {
 		t.Fatalf("active=%v", cp.Active)
 	}
-	if cp.NewestRestored != nil {
-		t.Fatal("newest_restored should stay nil for partial-only restore record")
+	cp.syncActiveFromBackup(&CollectionMeta{NewestCompleted: cp.Active})
+	if cp.Active != nil {
+		t.Fatal("expected nil active when backup has no active")
 	}
 }
 
