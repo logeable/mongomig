@@ -10,7 +10,7 @@
 ```text
 {remote-prefix}/{db}/{collection}/
   meta.json          # 集合级：oldest/newest complete、active（restore 用 active 扩展恢复上界）
-  indexes.json       # 每次 backup 覆盖
+  indexes.json       # 每次 backup 覆盖；key 为有序 [{field,value},...] 数组
   {year}/{month}/{day}/{hour}/
     meta.json        # 小时级：status、tenants[]
     {shard}/{tenant_key}/dump.tar
@@ -120,6 +120,6 @@ s3:
 
 **重复覆盖**：每个租户 restore 前对 `tenant_field` + `time_field` 在当小时窗口执行 `deleteMany`（与 backup 查询一致），再 `mongorestore`；`--tenant-field` / `--time-field` 须与 backup 一致。全库重灌仍可用 `--drop --reset-checkpoint`。
 
-**索引**：每个集合 restore 时从 OSS `indexes.json`（backup 写入）创建索引；`--drop` 首次灌入时在第一个租户 `mongorestore` 之后建索引，增量场景在灌数据前确保索引已存在。
+**索引**：backup 用 `listIndexes` 的 BSON 顺序写入 `indexes.json`（`key` 为有序 `[{field,value},...]` 数组）；restore 据此建索引。旧版 `key` 对象格式不再支持，需重新 backup 覆盖 `indexes.json`。`--drop` 首次灌入时在第一个租户 `mongorestore` 之后建索引。
 
 流程：下载 `dump.tar` → 解压 →（deleteMany 当小时切片）→ `mongorestore --gzip` →（按集合确保 `indexes.json`）。

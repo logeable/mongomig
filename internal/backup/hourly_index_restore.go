@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
@@ -15,16 +14,8 @@ import (
 	"github.com/logeable/mongomig/internal/config"
 )
 
-// CollectionIndexesCatalog is the JSON shape of OSS indexes.json (see WriteCollectionIndexesJSON).
-type CollectionIndexesCatalog struct {
-	DB         string   `json:"db"`
-	Collection string   `json:"collection"`
-	Indexes    []bson.M `json:"indexes"`
-	UpdatedAt  string   `json:"updated_at"`
-}
-
-func (s *MetaStore) LoadCollectionIndexes(ctx context.Context, collectionBase string) (*CollectionIndexesCatalog, bool, error) {
-	var cat CollectionIndexesCatalog
+func (s *MetaStore) LoadCollectionIndexes(ctx context.Context, collectionBase string) (*collectionIndexesFile, bool, error) {
+	var cat collectionIndexesFile
 	ok, err := s.loadJSON(ctx, CollectionIndexesKey(collectionBase), &cat)
 	if err != nil || !ok {
 		return nil, ok, err
@@ -51,7 +42,7 @@ func EnsureCollectionIndexesFromOSS(ctx context.Context, mongoURI string, meta *
 	return EnsureCollectionIndexes(ctx, mongoURI, log, ns, cat)
 }
 
-func EnsureCollectionIndexes(ctx context.Context, mongoURI string, log *zap.Logger, ns NSSpec, cat *CollectionIndexesCatalog) error {
+func EnsureCollectionIndexes(ctx context.Context, mongoURI string, log *zap.Logger, ns NSSpec, cat *collectionIndexesFile) error {
 	if cat == nil || len(cat.Indexes) == 0 {
 		if log != nil {
 			log.Warn("indexes.json has no indexes", zap.String("collection", ns.String()))
@@ -70,8 +61,8 @@ func EnsureCollectionIndexes(ctx context.Context, mongoURI string, log *zap.Logg
 	coll := client.Database(ns.DB).Collection(ns.Coll)
 	created := 0
 	skipped := 0
-	for _, doc := range cat.Indexes {
-		model, ok, err := indexModelFromCatalogDoc(doc)
+	for _, entry := range cat.Indexes {
+		model, ok, err := indexModelFromCatalogEntry(entry)
 		if err != nil {
 			return fmt.Errorf("%s: %w", ns.String(), err)
 		}
@@ -105,74 +96,6 @@ func EnsureCollectionIndexes(ctx context.Context, mongoURI string, log *zap.Logg
 		)
 	}
 	return nil
-}
-
-func indexModelFromCatalogDoc(doc bson.M) (mongo.IndexModel, bool, error) {
-	name, _ := doc["name"].(string)
-	if name == "_id_" {
-		return mongo.IndexModel{}, false, nil
-	}
-	key := doc["key"]
-	if key == nil {
-		return mongo.IndexModel{}, false, fmt.Errorf("index %q missing key", name)
-	}
-	opts := options.Index()
-	if name != "" {
-		opts.SetName(name)
-	}
-	if v, ok := doc["unique"].(bool); ok && v {
-		opts.SetUnique(true)
-	}
-	if v, ok := doc["sparse"].(bool); ok && v {
-		opts.SetSparse(true)
-	}
-	if v, ok := doc["hidden"].(bool); ok && v {
-		opts.SetHidden(true)
-	}
-	if v, ok := doc["expireAfterSeconds"].(int32); ok {
-		opts.SetExpireAfterSeconds(v)
-	} else if v, ok := doc["expireAfterSeconds"].(int64); ok {
-		opts.SetExpireAfterSeconds(int32(v))
-	} else if v, ok := doc["expireAfterSeconds"].(float64); ok {
-		opts.SetExpireAfterSeconds(int32(v))
-	}
-	if v, ok := doc["partialFilterExpression"]; ok && v != nil {
-		opts.SetPartialFilterExpression(v)
-	}
-	if v, ok := doc["collation"]; ok && v != nil {
-		collation, err := indexCollationFromBSON(v)
-		if err != nil {
-			return mongo.IndexModel{}, false, err
-		}
-		opts.SetCollation(collation)
-	}
-	if v, ok := doc["weights"]; ok && v != nil {
-		if w, ok := v.(bson.M); ok {
-			opts.SetWeights(w)
-		}
-	}
-	if v, ok := doc["default_language"].(string); ok {
-		opts.SetDefaultLanguage(v)
-	}
-	if v, ok := doc["language_override"].(string); ok {
-		opts.SetLanguageOverride(v)
-	}
-	if v, ok := doc["textIndexVersion"].(int32); ok {
-		opts.SetTextVersion(v)
-	}
-	return mongo.IndexModel{Keys: key, Options: opts}, true, nil
-}
-
-func indexCollationFromBSON(v any) (*options.Collation, error) {
-	raw, err := bson.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var c options.Collation
-	if err := bson.Unmarshal(raw, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
 }
 
 func isIndexAlreadyExists(err error) bool {

@@ -32,14 +32,19 @@ func WriteCollectionIndexesJSON(ctx context.Context, mongoURI string, remote sto
 	if err != nil {
 		return fmt.Errorf("list indexes %s: %w", ns.String(), err)
 	}
-	var docs []bson.M
+	var entries []indexCatalogEntry
 	for cur.Next(ctx) {
-		var m bson.M
-		if err := cur.Decode(&m); err != nil {
+		var raw bson.Raw
+		if err := cur.Decode(&raw); err != nil {
 			_ = cur.Close(ctx)
 			return err
 		}
-		docs = append(docs, m)
+		entry, err := indexCatalogEntryFromBSONRaw(raw)
+		if err != nil {
+			_ = cur.Close(ctx)
+			return fmt.Errorf("index catalog %s: %w", ns.String(), err)
+		}
+		entries = append(entries, entry)
 	}
 	if err := cur.Err(); err != nil {
 		_ = cur.Close(ctx)
@@ -47,11 +52,11 @@ func WriteCollectionIndexesJSON(ctx context.Context, mongoURI string, remote sto
 	}
 	_ = cur.Close(ctx)
 
-	payload := map[string]any{
-		"db":         ns.DB,
-		"collection": ns.Coll,
-		"indexes":    docs,
-		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+	payload := collectionIndexesFile{
+		DB:         ns.DB,
+		Collection: ns.Coll,
+		Indexes:    entries,
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

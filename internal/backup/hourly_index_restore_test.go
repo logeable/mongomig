@@ -1,24 +1,28 @@
 package backup
 
 import (
+	"encoding/json"
 	"testing"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-func TestIndexModelFromCatalogDoc_skipsID(t *testing.T) {
-	_, ok, err := indexModelFromCatalogDoc(bson.M{"name": "_id_", "key": bson.M{"_id": 1}})
+func TestIndexModelFromCatalogEntry_skipsID(t *testing.T) {
+	_, ok, err := indexModelFromCatalogEntry(indexCatalogEntry{
+		Name: "_id_",
+		Key:  []indexKeyPair{{Field: "_id", Value: json.RawMessage(`1`)}},
+	})
 	if err != nil || ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
 }
 
-func TestIndexModelFromCatalogDoc_unique(t *testing.T) {
-	m, ok, err := indexModelFromCatalogDoc(bson.M{
-		"name":   "tenant_key_1",
-		"key":    bson.M{"tenant_key": 1},
-		"unique": true,
+func TestIndexModelFromCatalogEntry_unique(t *testing.T) {
+	u := true
+	m, ok, err := indexModelFromCatalogEntry(indexCatalogEntry{
+		Name:   "tenant_key_1",
+		Key:    []indexKeyPair{{Field: "tenant_key", Value: json.RawMessage(`1`)}},
+		Unique: &u,
 	})
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
