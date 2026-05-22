@@ -116,7 +116,7 @@ s3:
 
 **OSS `active`**：集合 `meta.json` 里指向正在备份或中断后仍为 `partial` 的 UTC 小时。restore 默认恢复范围上界为 **`max(newest_completed, active)`**，并恢复该 `partial` 小时已上传租户；**不写回** OSS `active`。
 
-**Restore checkpoint**（MongoDB）：`{db}.{restore_checkpoint_collection}` 文档 `_id={remote_prefix}/{db}/{collection}`，仅含 `newest_restored` / `oldest_restored`。整小时全部租户成功后推进；中断不推进，下次重跑该整小时。
+**Restore checkpoint**（MongoDB）：`{db}.{restore_checkpoint_collection}` 文档 `_id={remote_prefix}/{db}/{collection}`，含 `newest_restored` / `oldest_restored` 与仅作审计的 `active`（最近一次成功恢复的小时及当时 OSS `status`，**不参与**调度判断）。`newest_restored` 仅在 OSS 小时 `complete` 且整桶租户恢复成功后推进；中断不写 checkpoint。
 
 **重复覆盖**：每个租户 restore 前对 `tenant_field` + `time_field` 在当小时窗口执行 `deleteMany`（与 backup 查询一致），再 `mongorestore`；`--tenant-field` / `--time-field` 须与 backup 一致。全库重灌仍可用 `--drop --reset-checkpoint`。
 

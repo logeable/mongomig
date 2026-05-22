@@ -72,6 +72,18 @@ func TestHourAlreadyRestored(t *testing.T) {
 	}
 }
 
+func TestSetRestoreActive_recordsHour(t *testing.T) {
+	hb := HourBucketUTC(mustParseRFC3339("2026-05-18T07:00:00Z"))
+	cp := newRestoreCheckpoint("mongomig", "mongomig/db/coll", "mongodb://localhost", NSSpec{DB: "db", Coll: "coll"})
+	cp.setRestoreActive(hb, HourStatusPartial)
+	if cp.Active == nil || cp.Active.Hour != 7 || cp.Active.Status != HourStatusPartial {
+		t.Fatalf("active=%v", cp.Active)
+	}
+	if cp.NewestRestored != nil {
+		t.Fatal("newest_restored should stay nil for partial-only restore record")
+	}
+}
+
 func TestMarkHourCompleteAdvancesCursor(t *testing.T) {
 	hb := HourBucketUTC(mustParseRFC3339("2026-01-01T07:00:00Z"))
 	cp := newRestoreCheckpoint("mongomig", "mongomig/db/coll", "mongodb://localhost", NSSpec{DB: "db", Coll: "coll"})

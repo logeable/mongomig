@@ -79,6 +79,7 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 				zap.String("checkpoint_coll", cpStore.collName),
 				zap.String("checkpoint_id", cp.ID),
 				zap.String("newest_restored", hourRefLabel(cp.NewestRestored)),
+				zap.String("active", hourRefLabel(cp.Active)),
 			)
 		}
 
@@ -211,6 +212,12 @@ func restoreHour(
 		log.Warn("skip hour: no uploaded tenants", zap.String("hour", hb.String()), zap.String("status", string(hm.Status)))
 		return nil
 	}
+	hourStaging := cfg.AbsStaging("restore", ns.DB, ns.Coll, hb.String())
+	defer func() {
+		if err := os.RemoveAll(hourStaging); err != nil && log != nil {
+			log.Debug("cleanup restore hour staging", zap.String("dir", hourStaging), zap.Error(err))
+		}
+	}()
 	log.Info("restore hour",
 		zap.String("collection", ns.String()),
 		zap.String("hour", hb.String()),
@@ -238,8 +245,11 @@ func restoreHour(
 	if stop, _ := shouldStopWork(ctx, opts.Shutdown); stop {
 		return persistRestoreShutdown(log, opts, ns, hb)
 	}
-	if !opts.DryRun && hourComplete {
-		cp.markHourComplete(hb)
+	if !opts.DryRun {
+		cp.setRestoreActive(hb, hm.Status)
+		if hourComplete {
+			cp.markHourComplete(hb)
+		}
 		if err := cpStore.Save(ctx, cp, ns); err != nil {
 			return err
 		}

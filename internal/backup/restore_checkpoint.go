@@ -19,7 +19,7 @@ import (
 const restoreCheckpointSchema = 2
 
 // RestoreCheckpoint is persisted in MongoDB (see config.DefaultRestoreCheckpointCollection).
-// Progress is hour-granularity only: newest_restored is advanced when an entire UTC hour finishes.
+// newest_restored advances when an entire UTC hour finishes on OSS; active is audit-only.
 type RestoreCheckpoint struct {
 	ID             string    `bson:"_id"`
 	Schema         int       `bson:"schema"`
@@ -30,7 +30,10 @@ type RestoreCheckpoint struct {
 	CollectionBase string    `bson:"collection_base"`
 	OldestRestored *HourRef  `bson:"oldest_restored,omitempty"`
 	NewestRestored *HourRef  `bson:"newest_restored,omitempty"`
-	UpdatedAt      time.Time `bson:"updated_at"`
+	// Active records the last UTC hour whose uploaded tenants were restored (OSS status at restore time).
+	// Not used for scheduling or skip logic.
+	Active    *HourRef  `bson:"active,omitempty"`
+	UpdatedAt time.Time `bson:"updated_at"`
 }
 
 // RestoreCheckpointStore reads/writes checkpoints in a dedicated MongoDB collection.
@@ -145,9 +148,15 @@ func (cp *RestoreCheckpoint) hourAlreadyRestored(hb HourBucket) bool {
 	return !hb.Start.After(cp.NewestRestored.Bucket().Start)
 }
 
+func (cp *RestoreCheckpoint) setRestoreActive(hb HourBucket, ossStatus HourStatus) {
+	ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), ossStatus)
+	cp.Active = &ref
+}
+
 func (cp *RestoreCheckpoint) markHourComplete(hb HourBucket) {
 	ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), HourStatusComplete)
 	cp.NewestRestored = &ref
+	cp.Active = &ref
 	if cp.OldestRestored == nil {
 		cp.OldestRestored = &ref
 	}
