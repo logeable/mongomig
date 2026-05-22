@@ -78,7 +78,7 @@ Ctrl+C：首次信号结束新租户/新小时，当前租户尽量跑完；不�
 			defer coord.Stop()
 			ctx := coord.Context()
 
-			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections)
+			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections, cfg.RestoreCheckpointColl())
 			if err != nil {
 				return err
 			}

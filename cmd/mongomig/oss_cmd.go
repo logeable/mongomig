@@ -45,7 +45,7 @@ func prepareOSSRun(ctx context.Context, v *viper.Viper, dbName, collections stri
 	if err != nil {
 		return nil, err
 	}
-	specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections)
+	specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections, cfg.RestoreCheckpointColl())
 	if err != nil {
 		_ = logger.Sync()
 		return nil, err

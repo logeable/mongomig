@@ -80,7 +80,7 @@ func newBackupCmd(v *viper.Viper) *cobra.Command {
 				)
 			}
 
-			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections)
+			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections, cfg.RestoreCheckpointColl())
 			if err != nil {
 				return err
 			}

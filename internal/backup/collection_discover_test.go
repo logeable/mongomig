@@ -24,6 +24,16 @@ func TestResolveCollectionSpecs_dbDotColl(t *testing.T) {
 	}
 }
 
+func TestResolveCollectionSpecs_excludesCheckpointColl(t *testing.T) {
+	specs, err := ResolveCollectionSpecs(t.Context(), nil, "", "revol", "a,_mongomig_restore,b", "_mongomig_restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 2 || specs[0].Coll != "a" || specs[1].Coll != "b" {
+		t.Fatalf("%+v", specs)
+	}
+}
+
 func TestResolveCollectionSpecs_requiresDB(t *testing.T) {
 	_, err := ResolveCollectionSpecs(t.Context(), nil, "", "", "")
 	if err == nil {

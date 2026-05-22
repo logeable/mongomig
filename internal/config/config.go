@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,14 @@ type Root struct {
 
 // DefaultRestoreCheckpointCollection is the MongoDB collection name for restore progress documents.
 const DefaultRestoreCheckpointCollection = "_mongomig_restore"
+
+// RestoreCheckpointColl returns the checkpoint collection name (never empty).
+func (r *Root) RestoreCheckpointColl() string {
+	if r != nil && strings.TrimSpace(r.RestoreCheckpointCollection) != "" {
+		return strings.TrimSpace(r.RestoreCheckpointCollection)
+	}
+	return DefaultRestoreCheckpointCollection
+}
 
 type S3 struct {
 	Endpoint        string `json:"endpoint"`

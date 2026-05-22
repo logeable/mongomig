@@ -53,7 +53,7 @@ go build -o mongomig ./cmd/mongomig
 | Flag | 说明 |
 |------|------|
 | `--db` | 必填（或 `mongomig.yaml` 中 `db`），要备份的 MongoDB 库名 |
-| `--collections` | 可选；逗号分隔**集合名**（相对 `--db`）。省略则自动 `listCollections` 发现该库下全部非 system 集合 |
+| `--collections` | 可选；逗号分隔**集合名**（相对 `--db`）。省略则自动发现该库下全部非 system 集合；**始终排除** `restore_checkpoint_collection`（默认 `_mongomig_restore`） |
 | `--from-hour` / `--to-hour` | UTC `YYYY-MM-DDTHH`；默认 `to` = 当前 UTC 小时 |
 | `--force-hour` | 已 `complete` 的小时仍重备 |
 
@@ -102,7 +102,7 @@ s3:
 | Flag | 说明 |
 |------|------|
 | `--db` | 目标库（恢复写入 `mongo_uri`；checkpoint 存在该库下） |
-| `--collections` | 可选；默认发现该库全部非 system 集合 |
+| `--collections` | 可选；默认发现该库全部非 system 集合（排除 `_mongomig_restore`） |
 | `--from-hour` / `--to-hour` | 可选；覆盖自动范围（见上表） |
 | `--tenant-field` / `--time-field` | 须与 backup 一致；restore 前按该窗口 deleteMany 以实现重复覆盖 |
 | `--drop` | 空库首次灌入：每个集合第一次 mongorestore 前 drop |
