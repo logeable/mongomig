@@ -120,6 +120,6 @@ s3:
 
 **重复覆盖**：每个租户 restore 前对 `tenant_field` + `time_field` 在当小时窗口执行 `deleteMany`（与 backup 查询一致），再 `mongorestore`；`--tenant-field` / `--time-field` 须与 backup 一致。全库重灌仍可用 `--drop --reset-checkpoint`。
 
-**索引**：backup 用 `listIndexes` 的 BSON 顺序写入 `indexes.json`（`key` 为有序 `[{field,value},...]` 数组）；restore 据此建索引。旧版 `key` 对象格式不再支持，需重新 backup 覆盖 `indexes.json`。`--drop` 首次灌入时在第一个租户 `mongorestore` 之后建索引。
+**索引**：backup 用 `listIndexes` 的 BSON 顺序写入 `indexes.json`（`key` 为有序 `[{field,value},...]` 数组）；restore **每个 collection 每次运行只同步一次**（以 OSS 为准：补齐缺失索引，删除目标库上 OSS 未声明的索引，保留 `_id_`）。旧版 `key` 对象格式不再支持，需重新 backup 覆盖 `indexes.json`。`--drop` 全量重灌时在第一个租户 `mongorestore --drop` 之后同步；增量恢复在灌数据前同步。
 
-流程：下载 `dump.tar` → 解压 →（deleteMany 当小时切片）→ `mongorestore --gzip` →（按集合确保 `indexes.json`）。
+流程：下载 `dump.tar` → 解压 →（deleteMany 当小时切片）→ `mongorestore --gzip`。

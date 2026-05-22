@@ -49,7 +49,7 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 
 	tools := execwrap.NewTools(cfg)
 	dropped := make(map[string]bool)
-	indexesEnsured := make(map[string]bool)
+	indexesSynced := make(map[string]bool)
 
 	for _, ns := range opts.Collections {
 		if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
@@ -98,33 +98,32 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 			zap.String("to_hour", end.String()),
 			zap.Int("hour_count", len(hours)),
 		)
-		if len(hours) == 0 {
-			log.Info("restore up to date", zap.String("collection", ns.String()))
-			continue
-		}
-
 		if cp == nil {
 			cp = newRestoreCheckpoint(opts.RemotePrefix, collBase, cfg.MongoURI, ns)
 		}
 
-		// When not using --drop on first tenant, ensure indexes before loading data.
-		skipDrop := cp.NewestRestored != nil
-		if !opts.DryRun && (!opts.Drop || skipDrop) {
-			if err := ensureCollectionIndexesOnce(ctx, cfg, meta, log, ns, collBase, indexesEnsured); err != nil {
+		if !opts.DryRun && !deferIndexSyncUntilAfterDrop(opts, cp) {
+			if err := syncCollectionIndexesOnce(ctx, cfg, meta, log, ns, collBase, indexesSynced); err != nil {
 				return fmt.Errorf("%s indexes: %w", ns.String(), err)
 			}
 		} else if opts.DryRun {
-			log.Info("dry-run: would ensure indexes from OSS indexes.json",
+			log.Info("dry-run: would sync indexes from OSS indexes.json",
 				zap.String("collection", ns.String()),
 				zap.String("key", CollectionIndexesKey(collBase)),
+				zap.Bool("defer_until_after_drop", deferIndexSyncUntilAfterDrop(opts, cp)),
 			)
+		}
+
+		if len(hours) == 0 {
+			log.Info("restore up to date", zap.String("collection", ns.String()))
+			continue
 		}
 
 		for _, hb := range hours {
 			if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
 				return err
 			}
-			if err := restoreHour(ctx, cfg, remote, meta, cpStore, cp, tools, log, opts, ns, collBase, hb, dropped, indexesEnsured); err != nil {
+			if err := restoreHour(ctx, cfg, remote, meta, cpStore, cp, tools, log, opts, ns, collBase, hb, dropped, indexesSynced); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return err
 				}
@@ -187,7 +186,7 @@ func restoreHour(
 	collBase string,
 	hb HourBucket,
 	dropped map[string]bool,
-	indexesEnsured map[string]bool,
+	indexesSynced map[string]bool,
 ) error {
 	if cp != nil && cp.hourAlreadyRestored(hb) {
 		log.Debug("skip hour: already restored", zap.String("hour", hb.String()))
@@ -235,7 +234,8 @@ func restoreHour(
 		if stop, _ := shouldStopWork(ctx, opts.Shutdown); stop {
 			return persistRestoreShutdown(log, opts, ns, hb)
 		}
-		if err := restoreOneTenant(ctx, cfg, remote, meta, cp, tools, log, opts, ns, collBase, hourBase, hb, row, dropped, indexesEnsured, opts.TenantField, opts.TimeField, opts.TenantNumeric); err != nil {
+		skipDrop := cp != nil && cp.NewestRestored != nil
+		if err := restoreOneTenant(ctx, cfg, remote, meta, tools, log, opts, ns, collBase, hourBase, hb, row, dropped, indexesSynced, skipDrop, opts.TenantField, opts.TimeField, opts.TenantNumeric); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return persistRestoreShutdown(log, opts, ns, hb)
 			}
@@ -296,7 +296,6 @@ func restoreOneTenant(
 	cfg *config.Root,
 	remote storage.Backend,
 	meta *MetaStore,
-	cp *RestoreCheckpoint,
 	tools *execwrap.Tools,
 	log *zap.Logger,
 	opts HourlyRestoreOpts,
@@ -306,7 +305,8 @@ func restoreOneTenant(
 	hb HourBucket,
 	row TenantMetaRow,
 	dropped map[string]bool,
-	indexesEnsured map[string]bool,
+	indexesSynced map[string]bool,
+	skipDrop bool,
 	tenantField, timeField string,
 	tenantNumeric bool,
 ) error {
@@ -314,8 +314,6 @@ func restoreOneTenant(
 	workDir := cfg.AbsStaging("restore", ns.DB, ns.Coll, hb.String(), row.TenantKey)
 	tarPath := filepath.Join(workDir, "dump.tar")
 	extractDir := filepath.Join(workDir, "extract")
-
-	skipDrop := cp != nil && cp.NewestRestored != nil
 	if opts.DryRun {
 		drop := opts.Drop && !dropped[ns.String()] && !skipDrop
 		log.Info("dry-run: would delete tenant hour slice and restore",
@@ -376,6 +374,11 @@ func restoreOneTenant(
 	}
 	if drop {
 		dropped[ns.String()] = true
+		if !opts.DryRun {
+			if err := syncCollectionIndexesOnce(ctx, cfg, meta, log, ns, collBase, indexesSynced); err != nil {
+				return err
+			}
+		}
 	}
-	return ensureCollectionIndexesOnce(ctx, cfg, meta, log, ns, collBase, indexesEnsured)
+	return nil
 }

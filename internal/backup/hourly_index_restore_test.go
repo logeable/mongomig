@@ -32,6 +32,20 @@ func TestIndexModelFromCatalogEntry_unique(t *testing.T) {
 	}
 }
 
+func TestDeferIndexSyncUntilAfterDrop(t *testing.T) {
+	if !deferIndexSyncUntilAfterDrop(HourlyRestoreOpts{Drop: true}, nil) {
+		t.Fatal("expected defer when drop and no checkpoint progress")
+	}
+	if deferIndexSyncUntilAfterDrop(HourlyRestoreOpts{Drop: false}, nil) {
+		t.Fatal("expected no defer without drop")
+	}
+	if deferIndexSyncUntilAfterDrop(HourlyRestoreOpts{Drop: true}, &RestoreCheckpoint{
+		NewestRestored: &HourRef{Year: 2026, Month: 1, Day: 1, Hour: 0, IntervalStartUTC: "2026-01-01T00:00:00Z", IntervalEndUTC: "2026-01-01T01:00:00Z"},
+	}) {
+		t.Fatal("expected no defer when checkpoint has newest_restored")
+	}
+}
+
 func TestIsIndexAlreadyExists(t *testing.T) {
 	err := mongo.CommandError{Code: 85, Message: "IndexOptionsConflict"}
 	if !isIndexAlreadyExists(err) {
