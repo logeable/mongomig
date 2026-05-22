@@ -25,18 +25,59 @@ func TestResolveRestoreHourRange_checkpointIncremental(t *testing.T) {
 	}
 }
 
-func TestCheckpointTenantAndHour(t *testing.T) {
-	hb := HourBucketUTC(mustParseRFC3339("2026-01-01T01:00:00Z"))
-	cp := newRestoreCheckpoint("mongomig", "mongomig/db/coll", "mongodb://localhost", NSSpec{DB: "db", Coll: "coll"})
-	row := TenantMetaRow{TenantKey: "t1", DataRelPath: "ab/t1/dump.tar", SHA256: "abc"}
-	cp.markTenantRestored(hb, row)
-	if !cp.tenantRestoredInHour(hb, row) {
-		t.Fatal("expected tenant restored")
+func TestResolveRestoreHourRange_activeExtendsEnd(t *testing.T) {
+	collMeta := &CollectionMeta{
+		OldestCompleted: &HourRef{
+			Year: 2026, Month: 5, Day: 18, Hour: 0,
+			IntervalStartUTC: "2026-05-18T00:00:00Z",
+			IntervalEndUTC:   "2026-05-18T01:00:00Z",
+		},
+		NewestCompleted: &HourRef{
+			Year: 2026, Month: 5, Day: 18, Hour: 5,
+			IntervalStartUTC: "2026-05-18T05:00:00Z",
+			IntervalEndUTC:   "2026-05-18T06:00:00Z",
+			Status:           HourStatusComplete,
+		},
+		Active: &HourRef{
+			Year: 2026, Month: 5, Day: 18, Hour: 7,
+			IntervalStartUTC: "2026-05-18T07:00:00Z",
+			IntervalEndUTC:   "2026-05-18T08:00:00Z",
+			Status:           HourStatusPartial,
+		},
 	}
+	_, end, err := resolveRestoreHourRange(HourlyRestoreOpts{}, collMeta, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end.Hour != 7 {
+		t.Fatalf("end=%s want hour 7 (active)", end)
+	}
+}
+
+func TestHourAlreadyRestored(t *testing.T) {
+	cp := &RestoreCheckpoint{
+		NewestRestored: &HourRef{
+			Year: 2026, Month: 1, Day: 1, Hour: 5,
+			IntervalStartUTC: "2026-01-01T05:00:00Z",
+			IntervalEndUTC:   "2026-01-01T06:00:00Z",
+		},
+	}
+	done := HourBucketUTC(mustParseRFC3339("2026-01-01T05:00:00Z"))
+	next := HourBucketUTC(mustParseRFC3339("2026-01-01T06:00:00Z"))
+	if !cp.hourAlreadyRestored(done) {
+		t.Fatal("hour 5 should be done")
+	}
+	if cp.hourAlreadyRestored(next) {
+		t.Fatal("hour 6 should not be done")
+	}
+}
+
+func TestMarkHourCompleteAdvancesCursor(t *testing.T) {
+	hb := HourBucketUTC(mustParseRFC3339("2026-01-01T07:00:00Z"))
+	cp := newRestoreCheckpoint("mongomig", "mongomig/db/coll", "mongodb://localhost", NSSpec{DB: "db", Coll: "coll"})
 	cp.markHourComplete(hb)
-	tenants := []TenantMetaRow{row}
-	if !cp.hourFullyRestored(hb, tenants) {
-		t.Fatal("expected hour complete")
+	if cp.NewestRestored == nil || cp.NewestRestored.Hour != 7 {
+		t.Fatalf("newest=%v", cp.NewestRestored)
 	}
 }
 

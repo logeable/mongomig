@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/logeable/mongomig/internal/backup"
 	"github.com/logeable/mongomig/internal/config"
 	mongolog "github.com/logeable/mongomig/internal/log"
+	"github.com/logeable/mongomig/internal/shutdown"
 	"github.com/logeable/mongomig/internal/storage"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -18,11 +20,15 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 	var (
 		dbName          string
 		collections     string
+		tenantField     string
+		timeField       string
+		tenantNumeric   bool
 		fromHour        string
 		toHour          string
 		drop            bool
 		dryRun          bool
 		resetCheckpoint bool
+		shutdownGrace   time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "restore",
@@ -32,13 +38,15 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 用户场景（默认行为）:
   1. 首次灌库: restore --db <db> --collections <c> --drop
   2. 日常增量: restore --db <db> --collections <c>  （从 checkpoint 续到 OSS 最新 complete 小时）
-  3. 中断续跑: 同上，自动跳过已完成租户
+  3. 中断续跑: 同上，未写完 checkpoint 的整小时会重跑
   4. 换库/重灌: restore --db <db> --drop --reset-checkpoint
 
-仅恢复 OSS 上 status=complete 的小时；partial 请先 mongomig backup 补备。
+恢复 complete 与 partial（含 active 小时）桶内已上传租户；partial 不推进 checkpoint。
 进度写入 {db}._mongomig_restore（见 mongomig.yaml restore_checkpoint_collection）。
+每个租户 restore 前会按与 backup 相同的 tenant/time 窗口 deleteMany；每个集合从 OSS indexes.json 创建索引（须先 backup 生成该文件）。
 
-显式 --from-hour/--to-hour 覆盖自动范围；--dry-run 只打印计划。`,
+显式 --from-hour/--to-hour 覆盖自动范围；--dry-run 只打印计划。
+Ctrl+C：首次信号结束新租户/新小时，当前租户尽量跑完；不推进 checkpoint（未写完的整小时下次重跑）。再次或超时强制取消。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadViper(v)
 			if err != nil {
@@ -66,7 +74,10 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 			}
 			defer func() { _ = logger.Sync() }()
 
-			ctx := cmd.Context()
+			coord := shutdown.New(shutdownGrace)
+			defer coord.Stop()
+			ctx := coord.Context()
+
 			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections)
 			if err != nil {
 				return err
@@ -95,6 +106,9 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 			}
 			opts := backup.HourlyRestoreOpts{
 				Collections:          specs,
+				TenantField:          tenantField,
+				TimeField:            timeField,
+				TenantNumeric:        tenantNumeric,
 				FromHour:             from,
 				ToHour:               to,
 				RemotePrefix:         cfg.RemotePrefix,
@@ -102,9 +116,14 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 				Drop:                 drop,
 				DryRun:               dryRun,
 				ResetCheckpoint:      resetCheckpoint,
+				Shutdown:             coord,
 			}
 			if err := backup.RunHourlyOSSRestore(ctx, cfg, remote, logger, opts); err != nil {
-				logger.Warn("restore stopped", zap.Error(err))
+				if coord.Stopping() {
+					logger.Warn("restore stopped after shutdown signal", zap.Error(err), zap.Bool("forced", coord.Forced()))
+				} else {
+					logger.Warn("restore stopped", zap.Error(err))
+				}
 				return err
 			}
 			logger.Info("restore finished")
@@ -113,11 +132,15 @@ func newRestoreCmd(v *viper.Viper) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dbName, "db", "", "Target MongoDB database (required; or mongomig.yaml db)")
 	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection names; default: all non-system collections in --db")
+	cmd.Flags().StringVar(&tenantField, "tenant-field", "tenant_key", "BSON tenant field (must match backup)")
+	cmd.Flags().StringVar(&timeField, "time-field", "created_at", "BSON time field for hour window (must match backup)")
+	cmd.Flags().BoolVar(&tenantNumeric, "tenant-key-numeric", false, "Tenant id is numeric in queries (must match backup)")
 	cmd.Flags().StringVar(&fromHour, "from-hour", "", "First UTC hour YYYY-MM-DDTHH (default: checkpoint+1 or OSS oldest_completed)")
-	cmd.Flags().StringVar(&toHour, "to-hour", "", "Last UTC hour inclusive (default: OSS newest_completed)")
+	cmd.Flags().StringVar(&toHour, "to-hour", "", "Last UTC hour inclusive (default: max(OSS newest_completed, active))")
 	cmd.Flags().BoolVar(&drop, "drop", false, "Drop target collection before first mongorestore (empty cluster / full reload)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print restore plan only")
 	cmd.Flags().BoolVar(&resetCheckpoint, "reset-checkpoint", false, "Clear MongoDB restore progress then restore from OSS oldest")
+	cmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 30*time.Second, "After first Ctrl+C, wait up to this long for current tenant restore to finish")
 	_ = v.BindPFlag("db", cmd.Flags().Lookup("db"))
 	return cmd
 }

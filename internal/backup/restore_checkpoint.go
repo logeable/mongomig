@@ -16,36 +16,21 @@ import (
 	"github.com/logeable/mongomig/internal/config"
 )
 
-const restoreCheckpointSchema = 1
+const restoreCheckpointSchema = 2
 
 // RestoreCheckpoint is persisted in MongoDB (see config.DefaultRestoreCheckpointCollection).
+// Progress is hour-granularity only: newest_restored is advanced when an entire UTC hour finishes.
 type RestoreCheckpoint struct {
-	ID             string                            `bson:"_id"`
-	Schema         int                               `bson:"schema"`
-	DB             string                            `bson:"db"`
-	Collection     string                            `bson:"collection"`
-	MongoURIHash   string                            `bson:"mongo_uri_hash"`
-	RemotePrefix   string                            `bson:"remote_prefix"`
-	CollectionBase string                            `bson:"collection_base"`
-	OldestRestored *HourRef                          `bson:"oldest_restored,omitempty"`
-	NewestRestored *HourRef                          `bson:"newest_restored,omitempty"`
-	Hours          map[string]*HourRestoreCheckpoint `bson:"hours,omitempty"`
-	UpdatedAt      time.Time                         `bson:"updated_at"`
-}
-
-// HourRestoreCheckpoint tracks per-tenant progress within one UTC hour.
-type HourRestoreCheckpoint struct {
-	Hour     HourRef                          `bson:"hour"`
-	Complete bool                             `bson:"complete"`
-	Tenants  map[string]TenantRestoreRecord `bson:"tenants,omitempty"`
-}
-
-// TenantRestoreRecord marks one tenant dump.tar successfully mongorestore'd.
-type TenantRestoreRecord struct {
-	TenantKey   string    `bson:"tenant_key"`
-	DataRelPath string    `bson:"data_rel_path"`
-	SHA256      string    `bson:"sha256,omitempty"`
-	RestoredAt  time.Time `bson:"restored_at"`
+	ID             string    `bson:"_id"`
+	Schema         int       `bson:"schema"`
+	DB             string    `bson:"db"`
+	Collection     string    `bson:"collection"`
+	MongoURIHash   string    `bson:"mongo_uri_hash"`
+	RemotePrefix   string    `bson:"remote_prefix"`
+	CollectionBase string    `bson:"collection_base"`
+	OldestRestored *HourRef  `bson:"oldest_restored,omitempty"`
+	NewestRestored *HourRef  `bson:"newest_restored,omitempty"`
+	UpdatedAt      time.Time `bson:"updated_at"`
 }
 
 // RestoreCheckpointStore reads/writes checkpoints in a dedicated MongoDB collection.
@@ -121,9 +106,6 @@ func (s *RestoreCheckpointStore) Save(ctx context.Context, cp *RestoreCheckpoint
 	}
 	cp.Schema = restoreCheckpointSchema
 	cp.UpdatedAt = time.Now().UTC()
-	if cp.Hours == nil {
-		cp.Hours = make(map[string]*HourRestoreCheckpoint)
-	}
 	if cp.ID == "" {
 		cp.ID = restoreCheckpointID(cp.RemotePrefix, ns.DB, ns.Coll)
 	}
@@ -152,87 +134,18 @@ func newRestoreCheckpoint(remotePrefix, collectionBase, mongoURI string, ns NSSp
 		MongoURIHash:   mongoURIHash(mongoURI),
 		RemotePrefix:   strings.Trim(remotePrefix, "/"),
 		CollectionBase: collectionBase,
-		Hours:          make(map[string]*HourRestoreCheckpoint),
 	}
 }
 
-func hourCheckpointKey(hb HourBucket) string {
-	return hb.String()
-}
-
-func (cp *RestoreCheckpoint) hourCP(hb HourBucket) *HourRestoreCheckpoint {
-	if cp.Hours == nil {
-		cp.Hours = make(map[string]*HourRestoreCheckpoint)
-	}
-	key := hourCheckpointKey(hb)
-	h, ok := cp.Hours[key]
-	if !ok {
-		h = &HourRestoreCheckpoint{
-			Hour:    HourRefFromBucket(hb, HourMetaRefRelative(hb), HourStatusPartial),
-			Tenants: make(map[string]TenantRestoreRecord),
-		}
-		cp.Hours[key] = h
-	}
-	if h.Tenants == nil {
-		h.Tenants = make(map[string]TenantRestoreRecord)
-	}
-	return h
-}
-
-func (cp *RestoreCheckpoint) tenantRestoredInHour(hb HourBucket, row TenantMetaRow) bool {
-	if cp == nil {
+// hourAlreadyRestored reports whether hb is at or before the newest fully restored hour.
+func (cp *RestoreCheckpoint) hourAlreadyRestored(hb HourBucket) bool {
+	if cp == nil || cp.NewestRestored == nil {
 		return false
 	}
-	h := cp.Hours[hourCheckpointKey(hb)]
-	if h == nil || h.Tenants == nil {
-		return false
-	}
-	rec, ok := h.Tenants[row.TenantKey]
-	if !ok {
-		return false
-	}
-	if rec.DataRelPath != row.DataRelPath {
-		return false
-	}
-	if row.SHA256 != "" && !strings.EqualFold(rec.SHA256, row.SHA256) {
-		return false
-	}
-	return true
-}
-
-func (cp *RestoreCheckpoint) hourFullyRestored(hb HourBucket, tenants []TenantMetaRow) bool {
-	if cp == nil || len(tenants) == 0 {
-		return false
-	}
-	h := cp.Hours[hourCheckpointKey(hb)]
-	if h == nil || !h.Complete {
-		return false
-	}
-	for _, row := range tenants {
-		if !cp.tenantRestoredInHour(hb, row) {
-			return false
-		}
-	}
-	return true
-}
-
-func (cp *RestoreCheckpoint) markTenantRestored(hb HourBucket, row TenantMetaRow) {
-	h := cp.hourCP(hb)
-	h.Tenants[row.TenantKey] = TenantRestoreRecord{
-		TenantKey:   row.TenantKey,
-		DataRelPath: row.DataRelPath,
-		SHA256:      row.SHA256,
-		RestoredAt:  time.Now().UTC(),
-	}
-	if cp.OldestRestored == nil {
-		ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), HourStatusComplete)
-		cp.OldestRestored = &ref
-	}
+	return !hb.Start.After(cp.NewestRestored.Bucket().Start)
 }
 
 func (cp *RestoreCheckpoint) markHourComplete(hb HourBucket) {
-	h := cp.hourCP(hb)
-	h.Complete = true
 	ref := HourRefFromBucket(hb, HourMetaRefRelative(hb), HourStatusComplete)
 	cp.NewestRestored = &ref
 	if cp.OldestRestored == nil {
