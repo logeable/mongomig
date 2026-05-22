@@ -102,7 +102,7 @@ s3:
 | Flag | 说明 |
 |------|------|
 | `--db` | 目标库（恢复写入 `mongo_uri`；checkpoint 存在该库下） |
-| `--collections` | 可选；默认发现该库全部非 system 集合（排除 `_mongomig_restore`） |
+| `--collections` | 可选；默认在 OSS `{remote_prefix}/{db}/*/meta.json` 上发现已 backup 的集合（排除 `_mongomig_restore`）；显式列表须在 OSS 上存在 |
 | `--from-hour` / `--to-hour` | 可选；覆盖自动范围（见上表） |
 | `--tenant-field` / `--time-field` | 须与 backup 一致；restore 前按该窗口 deleteMany 以实现重复覆盖 |
 | `--drop` | 空库首次灌入：每个集合第一次 mongorestore 前 drop |

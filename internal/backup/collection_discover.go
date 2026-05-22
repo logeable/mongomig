@@ -40,24 +40,9 @@ func ResolveCollectionSpecs(ctx context.Context, log *zap.Logger, mongoURI, dbNa
 	if log != nil {
 		log.Debug("using explicit collection list", zap.String("db", dbName), zap.String("collections", collectionsCSV))
 	}
-	var out []NSSpec
-	for _, part := range strings.Split(collectionsCSV, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if db, coll, ok := strings.Cut(part, "."); ok && strings.TrimSpace(coll) != "" {
-			db, coll = strings.TrimSpace(db), strings.TrimSpace(coll)
-			if db == "" {
-				return nil, fmt.Errorf("invalid collection %q", part)
-			}
-			out = append(out, NSSpec{DB: db, Coll: coll})
-			continue
-		}
-		out = append(out, NSSpec{DB: dbName, Coll: part})
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no collections in --collections")
+	out, err := parseCollectionsCSV(dbName, collectionsCSV)
+	if err != nil {
+		return nil, err
 	}
 	return filterExcludedSpecs(out, log, excludeCollections...)
 }

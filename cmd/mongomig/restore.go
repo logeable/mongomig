@@ -78,10 +78,22 @@ Ctrl+C：首次信号结束新租户/新小时，当前租户尽量跑完；不�
 			defer coord.Stop()
 			ctx := coord.Context()
 
-			specs, err := backup.ResolveCollectionSpecs(ctx, logger, cfg.MongoURI, dbName, collections, cfg.RestoreCheckpointColl())
+			remote, err := storage.NewRemote(ctx, cfg)
 			if err != nil {
 				return err
 			}
+			specs, err := backup.ResolveRestoreCollectionSpecs(ctx, logger, remote, cfg.RemotePrefix, dbName, collections, cfg.RestoreCheckpointColl())
+			if err != nil {
+				return err
+			}
+			names := make([]string, len(specs))
+			for i, s := range specs {
+				names[i] = s.String()
+			}
+			logger.Info("restore collections resolved from OSS",
+				zap.String("db", dbName),
+				zap.Strings("collections", names),
+			)
 
 			var from *backup.HourBucket
 			if strings.TrimSpace(fromHour) != "" {
@@ -98,11 +110,6 @@ Ctrl+C：首次信号结束新租户/新小时，当前租户尽量跑完；不�
 					return err
 				}
 				to = &tb
-			}
-
-			remote, err := storage.NewRemote(ctx, cfg)
-			if err != nil {
-				return err
 			}
 			opts := backup.HourlyRestoreOpts{
 				Collections:          specs,
@@ -131,7 +138,7 @@ Ctrl+C：首次信号结束新租户/新小时，当前租户尽量跑完；不�
 		},
 	}
 	cmd.Flags().StringVar(&dbName, "db", "", "Target MongoDB database (required; or mongomig.yaml db)")
-	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection names; default: all non-system collections in --db")
+	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection names; default: discover collections with meta.json on OSS under remote_prefix/--db")
 	cmd.Flags().StringVar(&tenantField, "tenant-field", "tenant_key", "BSON tenant field (must match backup)")
 	cmd.Flags().StringVar(&timeField, "time-field", "created_at", "BSON time field for hour window (must match backup)")
 	cmd.Flags().BoolVar(&tenantNumeric, "tenant-key-numeric", false, "Tenant id is numeric in queries (must match backup)")
