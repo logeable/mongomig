@@ -125,15 +125,24 @@ func (t *Tools) RestoreNamespace(ctx context.Context, dumpDir, db, coll string, 
 	if err != nil {
 		return err
 	}
-	args := []string{"--uri", t.cfg.MongoURI, "--db", db, "--collection", coll}
-	if t.cfg.Gzip {
+	args := restoreNamespaceArgs(t.cfg.MongoURI, db, coll, t.cfg.Gzip, drop)
+	args = append(args, bsonPath)
+	return t.run(ctx, bin, args, t.cfg.RestoreTimeout)
+}
+
+func restoreNamespaceArgs(uri, db, coll string, gzip, drop bool) []string {
+	args := []string{"--uri", uri, "--db", db, "--collection", coll}
+	if gzip {
 		args = append(args, "--gzip")
 	}
+	// Indexes are managed by mongomig from indexes.json. This also prevents a
+	// tenant-scoped restore from applying the dump metadata's indexes to the
+	// entire target collection.
+	args = append(args, "--noIndexRestore")
 	if drop {
 		args = append(args, "--drop")
 	}
-	args = append(args, bsonPath)
-	return t.run(ctx, bin, args, t.cfg.RestoreTimeout)
+	return args
 }
 
 func resolveDumpBSONPath(dumpDir, db, coll string, gzip bool) (string, error) {
