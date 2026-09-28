@@ -16,20 +16,22 @@ import (
 	"github.com/logeable/mongomig/internal/config"
 )
 
-const restoreCheckpointSchema = 2
+const restoreCheckpointSchema = 3
 
 // RestoreCheckpoint is persisted in MongoDB (see config.DefaultRestoreCheckpointCollection).
-// newest_restored advances when an entire UTC hour finishes on OSS; active is audit-only.
+// newest_restored advances when the checkpoint scope finishes an OSS complete UTC hour; active is audit-only.
 type RestoreCheckpoint struct {
-	ID             string    `bson:"_id"`
-	Schema         int       `bson:"schema"`
-	DB             string    `bson:"db"`
-	Collection     string    `bson:"collection"`
-	MongoURIHash   string    `bson:"mongo_uri_hash"`
-	RemotePrefix   string    `bson:"remote_prefix"`
-	CollectionBase string    `bson:"collection_base"`
-	OldestRestored *HourRef  `bson:"oldest_restored,omitempty"`
-	NewestRestored *HourRef  `bson:"newest_restored,omitempty"`
+	ID             string   `bson:"_id"`
+	Schema         int      `bson:"schema"`
+	Scope          string   `bson:"scope,omitempty"`
+	TenantKey      string   `bson:"tenant_key,omitempty"`
+	DB             string   `bson:"db"`
+	Collection     string   `bson:"collection"`
+	MongoURIHash   string   `bson:"mongo_uri_hash"`
+	RemotePrefix   string   `bson:"remote_prefix"`
+	CollectionBase string   `bson:"collection_base"`
+	OldestRestored *HourRef `bson:"oldest_restored,omitempty"`
+	NewestRestored *HourRef `bson:"newest_restored,omitempty"`
 	// Active mirrors OSS collection meta active (backup in-flight partial hour). Audit only; not used for scheduling.
 	Active    *HourRef  `bson:"active,omitempty"`
 	UpdatedAt time.Time `bson:"updated_at"`
@@ -70,6 +72,10 @@ func restoreCheckpointID(remotePrefix, db, coll string) string {
 	return strings.Trim(remotePrefix, "/") + "/" + db + "/" + coll
 }
 
+func restoreTenantCheckpointID(remotePrefix, db, coll, tenantKey string) string {
+	return restoreCheckpointID(remotePrefix, db, coll) + "/tenant/" + tenantKey
+}
+
 func mongoURIHash(mongoURI string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(mongoURI)))
 	return hex.EncodeToString(sum[:8])
@@ -78,6 +84,16 @@ func mongoURIHash(mongoURI string) string {
 // Load returns a checkpoint or nil if missing. Validates target identity when a document exists.
 func (s *RestoreCheckpointStore) Load(ctx context.Context, remotePrefix, collectionBase, mongoURI string, ns NSSpec) (*RestoreCheckpoint, error) {
 	id := restoreCheckpointID(remotePrefix, ns.DB, ns.Coll)
+	return s.load(ctx, id, remotePrefix, collectionBase, mongoURI, ns, "collection", "")
+}
+
+// LoadTenant returns a tenant-scoped checkpoint or nil if missing.
+func (s *RestoreCheckpointStore) LoadTenant(ctx context.Context, remotePrefix, collectionBase, mongoURI string, ns NSSpec, tenantKey string) (*RestoreCheckpoint, error) {
+	id := restoreTenantCheckpointID(remotePrefix, ns.DB, ns.Coll, tenantKey)
+	return s.load(ctx, id, remotePrefix, collectionBase, mongoURI, ns, "tenant", tenantKey)
+}
+
+func (s *RestoreCheckpointStore) load(ctx context.Context, id, remotePrefix, collectionBase, mongoURI string, ns NSSpec, scope, tenantKey string) (*RestoreCheckpoint, error) {
 	var cp RestoreCheckpoint
 	err := s.checkpointColl(ns.DB).FindOne(ctx, bson.M{"_id": id}).Decode(&cp)
 	if errors.Is(err, mongo.ErrNoDocuments) {
@@ -99,6 +115,12 @@ func (s *RestoreCheckpointStore) Load(ctx context.Context, remotePrefix, collect
 	if cp.DB != ns.DB || cp.Collection != ns.Coll {
 		return nil, fmt.Errorf("checkpoint %s db/collection mismatch", id)
 	}
+	if cp.Scope != "" && cp.Scope != scope {
+		return nil, fmt.Errorf("checkpoint %s scope mismatch (want %s)", id, scope)
+	}
+	if scope == "tenant" && cp.TenantKey != tenantKey {
+		return nil, fmt.Errorf("checkpoint %s tenant_key mismatch", id)
+	}
 	return &cp, nil
 }
 
@@ -107,6 +129,13 @@ func (s *RestoreCheckpointStore) Save(ctx context.Context, cp *RestoreCheckpoint
 		return nil
 	}
 	cp.Schema = restoreCheckpointSchema
+	if cp.Scope == "" {
+		if cp.TenantKey != "" {
+			cp.Scope = "tenant"
+		} else {
+			cp.Scope = "collection"
+		}
+	}
 	cp.UpdatedAt = time.Now().UTC()
 	if cp.ID == "" {
 		cp.ID = restoreCheckpointID(cp.RemotePrefix, ns.DB, ns.Coll)
@@ -127,10 +156,34 @@ func (s *RestoreCheckpointStore) Remove(ctx context.Context, remotePrefix string
 	return nil
 }
 
+func (s *RestoreCheckpointStore) RemoveTenant(ctx context.Context, remotePrefix string, ns NSSpec, tenantKey string) error {
+	id := restoreTenantCheckpointID(remotePrefix, ns.DB, ns.Coll, tenantKey)
+	_, err := s.checkpointColl(ns.DB).DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return fmt.Errorf("delete tenant restore checkpoint %s: %w", id, err)
+	}
+	return nil
+}
+
 func newRestoreCheckpoint(remotePrefix, collectionBase, mongoURI string, ns NSSpec) *RestoreCheckpoint {
 	return &RestoreCheckpoint{
 		ID:             restoreCheckpointID(remotePrefix, ns.DB, ns.Coll),
 		Schema:         restoreCheckpointSchema,
+		Scope:          "collection",
+		DB:             ns.DB,
+		Collection:     ns.Coll,
+		MongoURIHash:   mongoURIHash(mongoURI),
+		RemotePrefix:   strings.Trim(remotePrefix, "/"),
+		CollectionBase: collectionBase,
+	}
+}
+
+func newTenantRestoreCheckpoint(remotePrefix, collectionBase, mongoURI string, ns NSSpec, tenantKey string) *RestoreCheckpoint {
+	return &RestoreCheckpoint{
+		ID:             restoreTenantCheckpointID(remotePrefix, ns.DB, ns.Coll, tenantKey),
+		Schema:         restoreCheckpointSchema,
+		Scope:          "tenant",
+		TenantKey:      tenantKey,
 		DB:             ns.DB,
 		Collection:     ns.Coll,
 		MongoURIHash:   mongoURIHash(mongoURI),

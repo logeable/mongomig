@@ -106,3 +106,21 @@ func TestRestoreCheckpointID(t *testing.T) {
 		t.Fatalf("got %q", id)
 	}
 }
+
+func TestRestoreTenantCheckpointID(t *testing.T) {
+	id := restoreTenantCheckpointID("mongomig", "revol", "samples", testTenantKeyA)
+	want := "mongomig/revol/samples/tenant/" + testTenantKeyA
+	if id != want {
+		t.Fatalf("got %q want %q", id, want)
+	}
+}
+
+func TestNewTenantRestoreCheckpoint(t *testing.T) {
+	cp := newTenantRestoreCheckpoint("mongomig", "mongomig/revol/samples", "mongodb://localhost", NSSpec{DB: "revol", Coll: "samples"}, testTenantKeyA)
+	if cp.Scope != "tenant" || cp.TenantKey != testTenantKeyA {
+		t.Fatalf("unexpected scope/key: %+v", cp)
+	}
+	if cp.ID != restoreTenantCheckpointID("mongomig", "revol", "samples", testTenantKeyA) {
+		t.Fatalf("unexpected id: %q", cp.ID)
+	}
+}

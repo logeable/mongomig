@@ -86,6 +86,8 @@ s3:
 | **中断续跑** | 同上（重跑当前未写完 checkpoint 的整小时） | 从 `newest_restored+1` 或中断小时重试 |
 | **换集群 / 全量重灌** | `restore --db revol --drop --reset-checkpoint` | 清 checkpoint 后从 OSS 最旧小时重来 |
 | **只恢复某段** | `restore ... --from-hour ... --to-hour ...` | 显式覆盖上表 |
+| **指定一个或多个租户** | `restore --db revol --tenant-key <key> [--tenant-key <key> ...]` | 每个租户使用独立 checkpoint |
+| **从文件指定租户** | `restore --db revol --tenant-file tenants.txt` | 文件每行一个 tenant_key |
 
 约定：恢复 **`complete` 与 `partial`（含 collection `active` 指向的进行中小时）** 桶内 `uploaded=true` 的租户；`partial` 小时**不推进** restore checkpoint，backup 补全该小时后再次 `restore` 会续上剩余租户。自动上界为 `max(newest_completed, active)`。
 
@@ -95,19 +97,23 @@ s3:
 ./mongomig --config ./mongomig.yaml restore \
   --db revol \
   [--collections "coll_a,coll_b"] \
+  [--tenant-key <42-char-key>] [--tenant-file tenants.txt] \
   [--from-hour 2026-05-15T00] [--to-hour 2026-05-15T17] \
-  [--drop] [--reset-checkpoint] [--dry-run]
+  [--drop] [--reset-checkpoint] [--no-checkpoint] [--dry-run]
 ```
 
 | Flag | 说明 |
 |------|------|
 | `--db` | 目标库（恢复写入 `mongo_uri`；checkpoint 存在该库下） |
 | `--collections` | 可选；默认在 OSS `{remote_prefix}/{db}/*/meta.json` 上发现已 backup 的集合（排除 `_mongomig_restore`）；显式列表须在 OSS 上存在 |
+| `--tenant-key` | 可重复；指定精确的 42 字符 tenant_key；与 `--tenant-file` 合并后去重 |
+| `--tenant-file` | 文本文件，每行一个 42 字符 tenant_key；空行和 `#` 注释行忽略 |
 | `--from-hour` / `--to-hour` | 可选；覆盖自动范围（见上表） |
 | `--tenant-field` / `--time-field` | 须与 backup 一致；restore 前按该窗口 deleteMany 以实现重复覆盖 |
 | `--drop` | 空库首次灌入：每个集合第一次 mongorestore 前 drop |
 | `--reset-checkpoint` | 删除 `{db}._mongomig_restore` 中该集合进度文档 |
 | `--dry-run` | 只打印计划 |
+| `--no-checkpoint` | 仅指定租户模式；不读写租户 checkpoint，必须同时指定 `--from-hour` 和 `--to-hour` |
 | `--shutdown-grace` | 首次 Ctrl+C 后等待当前租户 restore 完成的最长时间（默认 30s） |
 
 **优雅退出**：中断**不**写入 checkpoint；`newest_restored` 仅在整小时全部租户 restore 成功后推进，下次重跑未写完的整小时。
@@ -118,8 +124,12 @@ s3:
 
 **Restore checkpoint**（MongoDB）：`{db}.{restore_checkpoint_collection}` 文档 `_id={remote_prefix}/{db}/{collection}`，含 `newest_restored` / `oldest_restored` 与 `active`（**镜像** OSS 集合 `meta.json` 里 backup 的 `active`，仅作记录、**不参与** restore 调度）。`newest_restored` 仅在 OSS 小时 `complete` 且整桶租户恢复成功后推进；中断不写 checkpoint。
 
+**指定租户 checkpoint**：带 `--tenant-key` 或 `--tenant-file` 时，不读取或推进 collection 级 checkpoint；每个 `{collection, tenant_key}` 单独保存一条文档，`_id={remote_prefix}/{db}/{collection}/tenant/{tenant_key}`，`scope=tenant`。`--reset-checkpoint` 只清理指定租户文档；`--drop` 与指定租户模式互斥。
+
 **重复覆盖**：每个租户 restore 前对 `tenant_field` + `time_field` 在当小时窗口执行 `deleteMany`（与 backup 查询一致），再 `mongorestore`；`--tenant-field` / `--time-field` 须与 backup 一致。全库重灌仍可用 `--drop --reset-checkpoint`。
 
 **索引**：backup 用 `listIndexes` 的 BSON 顺序写入 `indexes.json`（`key` 为有序 `[{field,value},...]` 数组）；restore **每个 collection 每次运行只同步一次**（以 OSS 为准：补齐缺失索引，删除目标库上 OSS 未声明的索引，保留 `_id_`）。旧版 `key` 对象格式不再支持，需重新 backup 覆盖 `indexes.json`。`--drop` 全量重灌时在第一个租户 `mongorestore --drop` 之后同步；增量恢复在灌数据前同步。
+
+指定租户模式不执行 collection 级索引同步，以避免恢复单个租户时删除其他用途的索引。
 
 流程：下载 `dump.tar` → 解压 →（deleteMany 当小时切片）→ `mongorestore --gzip`。

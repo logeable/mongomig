@@ -19,6 +19,7 @@ import (
 // HourlyRestoreOpts configures RunHourlyOSSRestore.
 type HourlyRestoreOpts struct {
 	Collections          []NSSpec
+	TenantKeys           []string
 	TenantField          string
 	TimeField            string
 	TenantNumeric        bool
@@ -28,6 +29,7 @@ type HourlyRestoreOpts struct {
 	CheckpointCollection string
 	Drop                 bool
 	DryRun               bool
+	NoCheckpoint         bool
 	ResetCheckpoint      bool
 	Shutdown             *shutdown.Coordinator
 }
@@ -50,6 +52,7 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 	tools := execwrap.NewTools(cfg)
 	dropped := make(map[string]bool)
 	indexesSynced := make(map[string]bool)
+	matchedTenants := make(map[string]bool)
 
 	for _, ns := range opts.Collections {
 		if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
@@ -57,6 +60,29 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 		}
 		collBase := CollectionBase(opts.RemotePrefix, ns.DB, ns.Coll)
 		log.Info("collection restore start", zap.String("collection", ns.String()), zap.String("base", collBase))
+
+		collMeta, _, err := meta.LoadCollectionMeta(ctx, collBase)
+		if err != nil {
+			return err
+		}
+
+		if len(opts.TenantKeys) > 0 {
+			if opts.Drop {
+				return fmt.Errorf("%s: --drop cannot be used with tenant-scoped restore", ns.String())
+			}
+			matched, err := runTenantRestore(ctx, cfg, remote, meta, cpStore, tools, log, opts, ns, collBase, collMeta)
+			if err != nil {
+				return fmt.Errorf("%s tenant restore: %w", ns.String(), err)
+			}
+			for _, tenantKey := range matched {
+				matchedTenants[tenantKey] = true
+			}
+			continue
+		}
+
+		if opts.NoCheckpoint {
+			return fmt.Errorf("%s: --no-checkpoint requires tenant-scoped restore", ns.String())
+		}
 
 		if opts.ResetCheckpoint {
 			if err := cpStore.Remove(ctx, opts.RemotePrefix, ns); err != nil {
@@ -83,10 +109,6 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 			)
 		}
 
-		collMeta, _, err := meta.LoadCollectionMeta(ctx, collBase)
-		if err != nil {
-			return err
-		}
 		start, end, err := resolveRestoreHourRange(opts, collMeta, cp)
 		if err != nil {
 			return fmt.Errorf("%s: %w", ns.String(), err)
@@ -131,7 +153,168 @@ func RunHourlyOSSRestore(ctx context.Context, cfg *config.Root, remote storage.B
 			}
 		}
 	}
+	if len(opts.TenantKeys) > 0 && !opts.DryRun {
+		for _, tenantKey := range opts.TenantKeys {
+			if !matchedTenants[tenantKey] {
+				return fmt.Errorf("tenant_key %q was not found in the requested OSS hour range", tenantKey)
+			}
+		}
+	}
 	return nil
+}
+
+type tenantRestoreState struct {
+	key     string
+	cp      *RestoreCheckpoint
+	start   HourBucket
+	matched bool
+}
+
+func runTenantRestore(
+	ctx context.Context,
+	cfg *config.Root,
+	remote storage.Backend,
+	meta *MetaStore,
+	cpStore *RestoreCheckpointStore,
+	tools *execwrap.Tools,
+	log *zap.Logger,
+	opts HourlyRestoreOpts,
+	ns NSSpec,
+	collBase string,
+	collMeta *CollectionMeta,
+) ([]string, error) {
+	if opts.NoCheckpoint && (opts.FromHour == nil || opts.ToHour == nil) {
+		return nil, fmt.Errorf("--no-checkpoint with tenant restore requires both --from-hour and --to-hour")
+	}
+
+	states := make([]tenantRestoreState, 0, len(opts.TenantKeys))
+	var globalStart *HourBucket
+	var globalEnd *HourBucket
+	for _, tenantKey := range opts.TenantKeys {
+		if !opts.NoCheckpoint && opts.ResetCheckpoint {
+			if err := cpStore.RemoveTenant(ctx, opts.RemotePrefix, ns, tenantKey); err != nil {
+				return nil, err
+			}
+			log.Info("tenant restore checkpoint reset", zap.String("collection", ns.String()), zap.String("tenant", tenantKey))
+		}
+
+		var cp *RestoreCheckpoint
+		var err error
+		if !opts.NoCheckpoint {
+			cp, err = cpStore.LoadTenant(ctx, opts.RemotePrefix, collBase, cfg.MongoURI, ns, tenantKey)
+			if err != nil {
+				return nil, err
+			}
+		}
+		start, end, err := resolveRestoreHourRange(opts, collMeta, cp)
+		if err != nil {
+			return nil, fmt.Errorf("tenant %s: %w", tenantKey, err)
+		}
+		state := tenantRestoreState{
+			key:     tenantKey,
+			cp:      cp,
+			start:   start,
+			matched: cp != nil && cp.NewestRestored != nil,
+		}
+		if state.cp == nil && !opts.NoCheckpoint {
+			state.cp = newTenantRestoreCheckpoint(opts.RemotePrefix, collBase, cfg.MongoURI, ns, tenantKey)
+		}
+		states = append(states, state)
+		if globalStart == nil || start.Start.Before(globalStart.Start) {
+			startCopy := start
+			globalStart = &startCopy
+		}
+		if globalEnd == nil || end.Start.After(globalEnd.Start) {
+			endCopy := end
+			globalEnd = &endCopy
+		}
+	}
+
+	if globalStart == nil || globalEnd == nil || globalEnd.Start.Before(globalStart.Start) {
+		log.Info("tenant restore up to date", zap.String("collection", ns.String()))
+		return matchedTenantKeys(states), nil
+	}
+	hours := HoursInclusive(*globalStart, *globalEnd)
+	log.Info("tenant restore hour range",
+		zap.String("collection", ns.String()),
+		zap.String("from_hour", globalStart.String()),
+		zap.String("to_hour", globalEnd.String()),
+		zap.Int("hour_count", len(hours)),
+		zap.Int("tenant_count", len(states)),
+	)
+
+	for _, hb := range hours {
+		if stop, err := shouldStopWork(ctx, opts.Shutdown); stop {
+			return nil, err
+		}
+		hourBase := HourBase(collBase, hb)
+		hm, ok, err := meta.LoadHourMeta(ctx, hourBase)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			log.Warn("skip hour: meta.json missing on OSS", zap.String("collection", ns.String()), zap.String("hour", hb.String()))
+			continue
+		}
+		if err := validateHourStatus(hm.Status, HourMetaKey(hourBase)); err != nil {
+			return nil, err
+		}
+		rows := make(map[string]TenantMetaRow, len(hm.Tenants))
+		for _, row := range hm.Tenants {
+			rows[row.TenantKey] = row
+		}
+
+		for i := range states {
+			state := &states[i]
+			if hb.Start.Before(state.start.Start) || (state.cp != nil && state.cp.hourAlreadyRestored(hb)) {
+				continue
+			}
+			row, found := rows[state.key]
+			if found {
+				state.matched = true
+				if row.Error != "" || !row.Uploaded || strings.TrimSpace(row.DataRelPath) == "" {
+					if hm.Status == HourStatusComplete {
+						return nil, fmt.Errorf("tenant %s hour %s is not restorable: uploaded=%t error=%q data_rel_path=%q", state.key, hb.String(), row.Uploaded, row.Error, row.DataRelPath)
+					}
+					continue
+				}
+				if opts.DryRun {
+					log.Info("dry-run: would restore selected tenant", zap.String("collection", ns.String()), zap.String("hour", hb.String()), zap.String("tenant", state.key))
+				} else if err := restoreOneTenant(ctx, cfg, remote, meta, tools, log, opts, ns, collBase, hourBase, hb, row, nil, nil, true, opts.TenantField, opts.TimeField, opts.TenantNumeric); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return nil, persistRestoreShutdown(log, opts, ns, hb)
+					}
+					return nil, fmt.Errorf("tenant %s hour %s: %w", state.key, hb.String(), err)
+				}
+			}
+
+			if !opts.DryRun {
+				if hm.Status == HourStatusComplete {
+					state.cp.markHourComplete(hb)
+				}
+				ossCollMeta, _, err := meta.LoadCollectionMeta(ctx, collBase)
+				if err != nil {
+					return nil, err
+				}
+				state.cp.syncActiveFromBackup(ossCollMeta)
+				if err := cpStore.Save(ctx, state.cp, ns); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	return matchedTenantKeys(states), nil
+}
+
+func matchedTenantKeys(states []tenantRestoreState) []string {
+	matched := make([]string, 0, len(states))
+	for _, state := range states {
+		if state.matched {
+			matched = append(matched, state.key)
+		}
+	}
+	return matched
 }
 
 func resolveRestoreHourRange(opts HourlyRestoreOpts, collMeta *CollectionMeta, cp *RestoreCheckpoint) (start, end HourBucket, err error) {
